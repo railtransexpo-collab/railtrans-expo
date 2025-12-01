@@ -1,16 +1,47 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import Topbar from "../components/Topbar";
 import DynamicRegistrationForm from "./DynamicRegistrationForm";
 import TicketCategorySelector from "../components/TicketCategoryGenerator";
 import ManualPaymentStep from "../components/ManualPayemntStep";
 import ThankYouMessage from "../components/ThankYouMessage";
-import VisitorTicket from "../components/VisitorTicket";
 import { generateVisitorBadgePDF } from "../utils/pdfGenerator";
 
-const API_BASE = (window.__API_BASE__ || "http://localhost:5000").replace(/\/$/, "");
+/*
+ Awardees.jsx
+ - Loads config from backend
+ - Renders background video on desktop (image fallback otherwise)
+ - Removes any accept_terms / "I agree" fields coming from backend before passing fields to DynamicRegistrationForm
+ - Passes backend terms (termsUrl / termsText / termsLabel / termsRequired) to DynamicRegistrationForm via terms prop
+ - Keeps existing payment / finalize logic unchanged
+*/
+
+function getApiBaseFromEnvOrWindow() {
+  if (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) return process.env.REACT_APP_API_BASE.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.__API_BASE__) return String(window.__API_BASE__).replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) return String(window.__CONFIG__.backendUrl).replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location && window.location.origin) return window.location.origin.replace(/\/$/, "");
+  return "http://localhost:5000";
+}
+function apiUrl(path) {
+  const base = getApiBaseFromEnvOrWindow();
+  if (!path) return base;
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+}
+function normalizeAdminUrl(url) {
+  if (!url) return "";
+  const trimmed = String(url).trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("//")) return window.location.protocol + trimmed;
+  if (trimmed.startsWith("/")) return apiUrl(trimmed);
+  return apiUrl(trimmed);
+}
+
+const API_BASE = getApiBaseFromEnvOrWindow();
+
 const backgroundImg = "/images/train.png";
 
-/* ---------- helpers ---------- */
 function isEmailLike(v) {
   return typeof v === "string" && /\S+@\S+\.\S+/.test(v);
 }
@@ -19,6 +50,18 @@ const isFreeCategory = (val) => {
   const s = typeof val === "string" ? val.trim().toLowerCase() : val;
   return s === "free" || s === "free ticket" || s === "general" || s === "0" || s === 0;
 };
+
+// ticket price helper must be available before render / handlers
+function ticketPriceForCategory(cat) {
+  if (!cat) return 0;
+  const c = String(cat).toLowerCase();
+  if (c === "combo") return 5000;
+  if (c === "delegate") return 2500;
+  if (c === "vip") return 7500;
+  if (/free|general|0/.test(c)) return 0;
+  return 2500;
+}
+
 async function toBase64(pdf) {
   if (!pdf) return "";
   if (typeof pdf === "string") {
@@ -42,9 +85,9 @@ async function toBase64(pdf) {
   return "";
 }
 async function sendMailPayload(payload) {
-  const res = await fetch(`${API_BASE}/api/mailer`, {
+  const res = await fetch(apiUrl("/api/mailer"), {
     method: "POST",
-     headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   let body = null;
@@ -52,7 +95,6 @@ async function sendMailPayload(payload) {
   return { ok: res.ok, status: res.status, body };
 }
 
-/* ---------- EventDetailsBlock (shared) ---------- */
 function EventDetailsBlock({ event }) {
   if (!event) return <div className="text-[#21809b]">No event details available</div>;
   const logoGradient = "linear-gradient(90deg, #ffba08 0%, #19a6e7 60%, #21809b 100%)";
@@ -77,11 +119,10 @@ function EventDetailsBlock({ event }) {
   );
 }
 
-/* ---------- Awardees page (adapted from Speakers) ---------- */
 export default function Awardees() {
   const [config, setConfig] = useState(null);
   const [form, setForm] = useState({});
-  const [step, setStep] = useState(1); // 1=form, 2=choose ticket, 3=payment, 4=thank you
+  const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -94,33 +135,110 @@ export default function Awardees() {
   const [proofFile, setProofFile] = useState(null);
   const [pdfBlob, setPdfBlob] = useState(null);
 
-  // admin
   const [stats, setStats] = useState(null);
   const [sendingReminders, setSendingReminders] = useState(false);
 
   const finalizeCalledRef = useRef(false);
   const emailSentRef = useRef(false);
 
+  const videoRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(false);
+
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/awardee-config`);
-        const cfg = res.ok ? await res.json() : {};
-        if (!mounted) return;
-        setConfig(cfg || {});
-      } catch (e) {
-        if (!mounted) return;
-        setConfig({});
-      } finally {
-        if (!mounted) return;
-        setLoading(false);
-      }
-    })();
-    return () => { mounted = false; };
+    const mq = window.matchMedia("(max-width: 640px)");
+    const onChange = () => setIsMobile(!!mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", onChange); else mq.removeListener(onChange); };
   }, []);
 
-  /* ---------- Step 1: submit registration form (like speakers) ---------- */
+  const fetchConfig = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(apiUrl("/api/awardee-config?cb=" + Date.now()), { cache: "no-store", headers: { Accept: "application/json" } });
+      const cfg = res.ok ? await res.json() : {};
+      const normalized = { ...(cfg || {}) };
+
+      // normalize backgroundMedia (support legacy keys)
+      if (normalized.backgroundMedia && normalized.backgroundMedia.url) {
+        normalized.backgroundMedia = { type: normalized.backgroundMedia.type || "image", url: normalizeAdminUrl(normalized.backgroundMedia.url) };
+      } else {
+        const candidate = normalized.backgroundVideo || normalized.backgroundImage || normalized.background_image || "";
+        if (candidate) {
+          const isVideo = typeof candidate === "string" && /\.(mp4|webm|ogg)(\?|$)/i.test(candidate);
+          normalized.backgroundMedia = { type: isVideo ? "video" : "image", url: normalizeAdminUrl(candidate) };
+        } else {
+          normalized.backgroundMedia = { type: "image", url: "" };
+        }
+      }
+
+      normalized.termsUrl = normalized.termsUrl ? normalizeAdminUrl(normalized.termsUrl) : (normalized.terms || "");
+      normalized.termsText = normalized.termsText || "";
+      normalized.termsLabel = normalized.termsLabel || "Terms & Conditions";
+      normalized.fields = Array.isArray(normalized.fields) ? normalized.fields : [];
+      normalized.images = Array.isArray(normalized.images) ? normalized.images.map(normalizeAdminUrl) : [];
+
+      setConfig(normalized);
+    } catch (e) {
+      console.error("fetchConfig error", e);
+      setConfig({ fields: [], images: [], backgroundMedia: { type: "image", url: "" }, eventDetails: {} });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchConfig();
+    const onCfg = () => fetchConfig();
+    window.addEventListener("awardee-config-updated", onCfg);
+    return () => window.removeEventListener("awardee-config-updated", onCfg);
+  }, [fetchConfig]);
+
+  // attempt to autoplay desktop video (best-effort)
+  useEffect(() => {
+    if (isMobile) return;
+    const v = videoRef.current;
+    if (!v || !config?.backgroundMedia?.url || config.backgroundMedia.type !== "video") return;
+    let mounted = true;
+    let attemptId = 0;
+    const prevSrc = { src: v.src || "" };
+
+    async function tryPlay() {
+      const myId = ++attemptId;
+      try {
+        const currentSrc = v.currentSrc || v.src || "";
+        if (prevSrc.src !== currentSrc) { try { v.load(); } catch {} prevSrc.src = currentSrc; }
+        await new Promise((resolve, reject) => {
+          if (!mounted) return reject(new Error("unmounted"));
+          if (v.readyState >= 3) return resolve();
+          const onCan = () => { cleanup(); resolve(); };
+          const onErr = () => { cleanup(); reject(new Error("media error")); };
+          const timer = setTimeout(() => { cleanup(); resolve(); }, 3000);
+          function cleanup() { clearTimeout(timer); v.removeEventListener("canplay", onCan); v.removeEventListener("error", onErr); }
+          v.addEventListener("canplay", onCan);
+          v.addEventListener("error", onErr);
+        });
+        if (!mounted || myId !== attemptId) return;
+        await v.play();
+      } catch (err) {
+        // decorative video - ignore
+      }
+    }
+
+    const onCan = () => tryPlay();
+    const onErr = () => {};
+    v.addEventListener("canplay", onCan);
+    v.addEventListener("error", onErr);
+    tryPlay();
+
+    return () => {
+      mounted = false;
+      attemptId++;
+      try { v.removeEventListener("canplay", onCan); v.removeEventListener("error", onErr); } catch {}
+    };
+  }, [config?.backgroundMedia?.url, isMobile]);
+
   async function handleFormSubmit(payload) {
     setError("");
     if (!isEmailLike(payload.email)) {
@@ -129,10 +247,16 @@ export default function Awardees() {
     }
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE}/api/awardees`, {
+      // remove local accept_terms fields - we use centralized terms handling
+      const toSend = { ...payload };
+      delete toSend.accept_terms;
+      delete toSend.acceptTerms;
+      delete toSend.termsAccepted;
+
+      const res = await fetch(apiUrl("/api/awardees"), {
         method: "POST",
-         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
-        body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(toSend),
       });
       const js = await res.json().catch(() => ({}));
       if (!res.ok || !js.success) {
@@ -143,18 +267,16 @@ export default function Awardees() {
       const serverTicket = js.ticket_code || js.ticketCode || null;
       setAwardeeId(id);
       setTicketCode(serverTicket || "");
-      // store canonical server code in local form so later finalize uses it
       setForm(prev => ({ ...payload, ticket_code: serverTicket || prev.ticket_code || "" }));
       setStep(2);
-    } catch (err) {
-      console.error("save awardee error", err);
+    } catch (e) {
+      console.error("save awardee error", e);
       setError("Failed to save registration. Try again.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  /* ---------- Step 2: choose ticket ---------- */
   function handleTicketSelect(cat) {
     setTicketCategory(cat);
     if (isFreeCategory(cat)) {
@@ -162,17 +284,6 @@ export default function Awardees() {
     } else {
       setStep(3);
     }
-  }
-
-  /* ---------- Payment helpers (reused pattern) ---------- */
-  function ticketPriceForCategory(cat) {
-    if (!cat) return 0;
-    const c = String(cat).toLowerCase();
-    if (c === "combo") return 5000;
-    if (c === "delegate") return 2500;
-    if (c === "vip") return 7500;
-    if (/free|general|0/.test(c)) return 0;
-    return 2500;
   }
 
   async function createOrderAndOpenCheckout(price) {
@@ -191,9 +302,9 @@ export default function Awardees() {
         reference_id: String(awardeeId),
         metadata: { ticketCategory, email: form.email },
       };
-      const res = await fetch(`${API_BASE}/api/payment/create-order`, {
+      const res = await fetch(apiUrl("/api/payment/create-order"), {
         method: "POST",
-         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const js = await res.json().catch(() => ({}));
@@ -220,7 +331,7 @@ export default function Awardees() {
       const poll = setInterval(async () => {
         attempts += 1;
         try {
-          const st = await fetch(`${API_BASE}/api/payment/status?reference_id=${encodeURIComponent(String(awardeeId))}`);
+          const st = await fetch(apiUrl(`/api/payment/status?reference_id=${encodeURIComponent(String(awardeeId))}`));
           if (!st.ok) return;
           const js2 = await st.json().catch(() => ({}));
           const status = (js2.status || "").toString().toLowerCase();
@@ -240,9 +351,7 @@ export default function Awardees() {
             setError("Payment not confirmed yet. If you completed payment, refresh after a moment.");
             setProcessing(false);
           }
-        } catch (e) {
-          // ignore transient
-        }
+        } catch (e) { /* ignore transient */ }
       }, 3000);
     } catch (err) {
       console.error("createOrderAndOpenCheckout error", err);
@@ -257,7 +366,7 @@ export default function Awardees() {
         const fd = new FormData();
         fd.append("proof", file);
         fd.append("awardeeId", awardeeId);
-        await fetch(`${API_BASE}/api/awardees/${encodeURIComponent(String(awardeeId))}/upload-proof`, { method: "POST", body: fd }).catch(() => {});
+        await fetch(apiUrl(`/api/awardees/${encodeURIComponent(String(awardeeId))}/upload-proof`), { method: "POST", body: fd }).catch(() => {});
       }
     } catch (e) {
       console.warn("upload proof failed", e);
@@ -265,44 +374,36 @@ export default function Awardees() {
     await finalizeRegistrationAndSend(txId || null, ticketCategory);
   }
 
-  /* ---------- Finalize registration (pattern from Speakers) ---------- */
   async function finalizeRegistrationAndSend(providerTxId = null, chosenCategory = null) {
-    if (finalizeCalledRef.current) {
-      console.debug("finalizeRegistrationAndSend already invoked; skipping.");
-      return;
-    }
+    if (finalizeCalledRef.current) return;
     finalizeCalledRef.current = true;
-
     setProcessing(true);
     setError("");
     try {
       const name = form.name || `${form.firstName || ""} ${form.lastName || ""}`.trim() || "Awardee";
       const chosen = chosenCategory || ticketCategory || "free";
 
-      // Prefer server-provided ticket_code (stored in form.ticket_code or ticketCode)
       let ticket_code = form.ticket_code || ticketCode || null;
 
-      // if missing, try fetching server row for canonical code
       if (!ticket_code && awardeeId) {
         try {
-          const r = await fetch(`${API_BASE}/api/awardees/${encodeURIComponent(String(awardeeId))}`);
+          const r = await fetch(apiUrl(`/api/awardees/${encodeURIComponent(String(awardeeId))}`));
           if (r.ok) {
             const row = await r.json().catch(() => null);
             ticket_code = (row && (row.ticket_code || row.code)) || ticket_code;
             if (ticket_code) setTicketCode(ticket_code);
             setForm(prev => ({ ...prev, ticket_code: ticket_code || prev.ticket_code }));
           }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
       }
 
-      // If still missing, generate and persist once (last resort)
       if (!ticket_code) {
         const generated = String(Math.floor(100000 + Math.random() * 900000));
         if (awardeeId) {
           try {
-            await fetch(`${API_BASE}/api/awardees/${encodeURIComponent(String(awardeeId))}/confirm`, {
+            await fetch(apiUrl(`/api/awardees/${encodeURIComponent(String(awardeeId))}/confirm`), {
               method: "POST",
-               headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ ticket_code: generated, force: true }),
             }).catch(() => {});
             ticket_code = generated;
@@ -314,10 +415,9 @@ export default function Awardees() {
             setForm(prev => ({ ...prev, ticket_code: generated }));
           }
         } else {
-          // attempt to save a row now (rare)
           try {
-            const saveRes = await fetch(`${API_BASE}/api/awardees`, {
-              method: "POST",  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify({ ...form, ticket_code: generated })
+            const saveRes = await fetch(apiUrl("/api/awardees"), {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, ticket_code: generated })
             });
             const saveJs = await saveRes.json().catch(() => ({}));
             if (saveRes.ok && saveJs.success && saveJs.insertedId) setAwardeeId(saveJs.insertedId);
@@ -333,11 +433,11 @@ export default function Awardees() {
       }
 
       const full = { ...form, name, ticket_category: chosen, ticket_code, txId: providerTxId || txId, eventDetails: config?.eventDetails || {} };
-      // persist ticket central record (idempotent)
+
       try {
-        await fetch(`${API_BASE}/api/tickets/create`, {
+        await fetch(apiUrl("/api/tickets/create"), {
           method: "POST",
-           headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ticket_code,
             entity_type: "awardee",
@@ -349,18 +449,16 @@ export default function Awardees() {
             meta: { createdFrom: "awardee-frontend" },
           }),
         }).catch(() => {});
-      } catch (e) { /* ignore */ }
+      } catch (e) {}
 
-      // update awardee row (do not overwrite ticket_code)
       try {
-        await fetch(`${API_BASE}/api/awardees/${encodeURIComponent(String(awardeeId))}/confirm`, {
+        await fetch(apiUrl(`/api/awardees/${encodeURIComponent(String(awardeeId))}/confirm`), {
           method: "POST",
-           headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ticket_category: chosen, txId: providerTxId || txId || null }),
         }).catch(() => {});
       } catch (e) {}
 
-      // generate PDF (client utility preferred)
       let pdf = null;
       try {
         if (typeof generateVisitorBadgePDF === "function") {
@@ -372,7 +470,6 @@ export default function Awardees() {
         pdf = null;
       }
 
-      // send mail (guarded)
       if (!emailSentRef.current) {
         emailSentRef.current = true;
         try {
@@ -392,22 +489,20 @@ export default function Awardees() {
         }
       }
 
-      // WhatsApp notify (best-effort)
       try {
         if (form.mobile) {
-          await fetch(`${API_BASE}/api/notify/whatsapp`, {
+          await fetch(apiUrl("/api/notify/whatsapp"), {
             method: "POST",
-             headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ to: form.mobile, message: `Your ticket code: ${ticket_code}` }),
           });
         }
       } catch (e) { console.warn("whatsapp failed", e); }
 
-      // admin notify
       try {
         const adminEmail = process.env.REACT_APP_ADMIN_EMAIL || "admin@railtransexpo.com";
         await sendMailPayload({ to: adminEmail, subject: `New Awardee: ${name}`, text: `Name: ${name}\nEmail: ${form.email}\nTicket: ${ticket_code}\nID: ${awardeeId}` });
-      } catch (e) { /* ignore */ }
+      } catch (e) {}
 
       setStep(4);
     } catch (err) {
@@ -418,10 +513,9 @@ export default function Awardees() {
     }
   }
 
-  /* ---------- Admin helpers ---------- */
   async function fetchStats() {
     try {
-      const res = await fetch(`${API_BASE}/api/awardees/stats`);
+      const res = await fetch(apiUrl("/api/awardees/stats"));
       if (!res.ok) return;
       const js = await res.json();
       setStats(js);
@@ -433,7 +527,7 @@ export default function Awardees() {
   async function sendReminders() {
     setSendingReminders(true);
     try {
-      const res = await fetch(`${API_BASE}/api/awardees?limit=1000`);
+      const res = await fetch(apiUrl("/api/awardees?limit=1000"));
       if (!res.ok) {
         setError("Failed to fetch registrants for reminders.");
         setSendingReminders(false);
@@ -461,7 +555,6 @@ export default function Awardees() {
     }
   }
 
-  /* ---------- Small UI pieces ---------- */
   function TicketSelectionCard() {
     return (
       <div className="bg-white rounded-2xl shadow p-6 mb-6">
@@ -472,10 +565,17 @@ export default function Awardees() {
     );
   }
 
-  /* ---------- Render ---------- */
   return (
-    <div className="min-h-screen w-full relative" style={{ backgroundImage: `url(${backgroundImg})`, backgroundSize: "cover", backgroundPosition: "center" }}>
-      <div className="absolute inset-0 bg-white/50 pointer-events-none" />
+    <div className="min-h-screen w-full relative">
+      {/* Background video on desktop, image fallback on mobile or when no video */}
+      {!isMobile && config?.backgroundMedia?.type === "video" && config?.backgroundMedia?.url && (
+        <video ref={videoRef} src={config.backgroundMedia.url} autoPlay muted loop playsInline preload="auto" crossOrigin="anonymous" style={{ position: "fixed", inset: 0, width: "100%", height: "100%", objectFit: "cover", zIndex: -999 }} />
+      )}
+      {(!config?.backgroundColor) && config?.backgroundMedia?.type === "image" && config?.backgroundMedia?.url && (
+        <div style={{ position: "fixed", inset: 0, zIndex: -999, backgroundImage: `url(${config.backgroundMedia.url})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+      )}
+      <div style={{ position: "fixed", inset: 0, background: "rgba(255,255,255,0.55)", zIndex: -900 }} />
+
       <div className="relative z-10">
         <Topbar />
         <div className="max-w-7xl mx-auto pt-8 px-4">
@@ -500,14 +600,33 @@ export default function Awardees() {
           {/* Step 1 */}
           {step === 1 && !loading && Array.isArray(config?.fields) && (
             <div className="max-w-3xl mx-auto">
-              <DynamicRegistrationForm config={config} form={form} setForm={setForm} onSubmit={handleFormSubmit} editable={true} submitting={submitting} />
+              <DynamicRegistrationForm
+                config={{
+                  ...config,
+                  // strip accept_terms from the fields passed to the UI
+                  fields: (config.fields || []).filter(f => {
+                    const name = (f.name || "").toString().toLowerCase().replace(/\s+/g, "");
+                    const label = (f.label || "").toString().toLowerCase();
+                    if (name === "accept_terms" || name === "acceptterms" || name === "i_agree" || name === "agree") return false;
+                    if (f.type === "checkbox" && (label.includes("i agree") || label.includes("accept the terms") || label.includes("terms & conditions") || label.includes("terms and conditions"))) return false;
+                    return true;
+                  })
+                }}
+                form={form}
+                setForm={setForm}
+                onSubmit={handleFormSubmit}
+                editable={true}
+                submitting={submitting}
+                // only show terms checkbox/UI if backend provides termsUrl or termsText
+                terms={(config && (config.termsUrl || config.termsText)) ? { url: config.termsUrl, text: config.termsText, label: config.termsLabel || "Terms & Conditions", required: !!config.termsRequired } : null}
+              />
             </div>
           )}
 
           {/* Step 2 */}
           {step === 2 && <div className="max-w-3xl mx-auto">{TicketSelectionCard()}</div>}
 
-          {/* Step 3 - Payment */}
+          {/* Step 3 */}
           {step === 3 && (
             <div className="max-w-3xl mx-auto">
               <ManualPaymentStep
@@ -529,11 +648,10 @@ export default function Awardees() {
             </div>
           )}
 
-          {/* Step 4: Thank you + Ticket */}
+          {/* Step 4 */}
           {step === 4 && (
             <div className="max-w-3xl mx-auto">
               <ThankYouMessage email={form.email} />
-             
             </div>
           )}
 

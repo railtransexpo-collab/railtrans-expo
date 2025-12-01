@@ -1,129 +1,176 @@
-// Modified server.js - adds request logging and a guaranteed /api/visitor-config route
-// Insert this file to replace your current server.js, then restart the server.
-// This helps diagnose and (temporarily) fixes the 404/ngrok interstitial issue by:
-//  - logging every request (method, url, host, headers) to the console
-//  - providing a fallback /api/visitor-config response so ngrok and phones get JSON
-// Remove or adapt the fallback when your real visitorConfig route is confirmed working.
-
 require("dotenv").config();
 
-const express = require('express');
+const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const app = express();
 
-const cors = require('cors');
+const cors = require("cors");
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, "uploads");
+try {
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+} catch (e) {
+  console.warn("Could not ensure uploads directory:", e && e.message);
+}
 
 // --- Simple request logger (helps see if phone/ngrok requests reach this server) ---
 app.use((req, res, next) => {
   try {
-    console.log(`[REQ] ${new Date().toISOString()} ${req.method} ${req.originalUrl} host=${req.headers.host} referer=${req.headers.referer || ""}`);
-  } catch (e) { /* ignore logging errors */ }
+    console.log(
+      `[REQ] ${new Date().toISOString()} ${req.method} ${req.originalUrl} host=${req.headers.host} referer=${req.headers.referer || ""}`
+    );
+  } catch (e) {
+    /* ignore logging errors */
+  }
   next();
 });
 
 // CORS (kept permissive for dev - lock down in production)
 const allowedOrigins = [
-  process.env.APP_URL,process.env.APP_URL2
-];
+  process.env.APP_URL,
+  process.env.APP_URL2,
+].filter(Boolean);
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (!allowedOrigins || allowedOrigins.length === 0) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader("Access-Control-Allow-Origin", "*");
   } else if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
-    // development fallback - allow all (remove in prod)
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // development fallback - allow all (remove/restrict in prod)
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
- res.setHeader(
-  'Access-Control-Allow-Headers',
-  'Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning'
-);
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning"
+  );
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
 const PORT = process.env.PORT || 5000;
 app.use(express.json({ limit: "20mb" })); // supports base64 PDFs
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// Serve uploaded images statically (ensure 'uploads' directory exists)
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serve uploaded images statically
+app.use("/uploads", express.static(uploadsDir));
 
-// --- TEMPORARY: Fallback /api/visitor-config endpoint ---
-// Add this BEFORE mounting your real routes so we always have a reachable endpoint.
-// This will help check whether the phone/ngrok requests reach your server.
-// Replace the payload with real data or remove this once the real route works.
-// app.get("/api/visitor-config", (req, res) => {
-//   console.log("[FALLBACK] /api/visitor-config requested from", req.headers.host || req.ip);
-//   // Example minimal config that DynamicRegistrationForm will accept
-//   const exampleConfig = {
-//     backgroundMedia: { type: "image", url: "/uploads/bg.jpg" },
-//     images: ["/uploads/img1.jpg", "/uploads/img2.jpg"],
-//     eventDetails: { name: "RailTrans Expo", date: "2026-06-10", venue: "Expo Center" },
-//     termsUrl: "/uploads/terms.pdf",
-//     termsRequired: true,
-//     termsLabel: "I accept the Terms & Conditions",
-//     fields: [
-//       { name: "name", label: "Full name", type: "text", required: true },
-//       { name: "email", label: "Email", type: "email", required: true },
-//       { name: "company", label: "Company", type: "text", required: false }
-//     ]
-//   };
-//   res.json(exampleConfig);
-// });
+// --- GUARANTEED FALLBACK /api/visitor-config endpoint ---
+// This fallback ensures something responds for /api/visitor-config (useful for debugging ngrok/phones).
+// You can remove or replace this when your real visitorConfig route is ready.
+// It intentionally returns a minimal valid configuration for DynamicRegistrationForm.
+app.get("/api/visitor-config", (req, res) => {
+  console.log("[FALLBACK] /api/visitor-config requested from", req.headers.host || req.ip);
+  const exampleConfig = {
+    backgroundMedia: { type: "image", url: "/uploads/bg.jpg" },
+    images: ["/uploads/img1.jpg", "/uploads/img2.jpg"],
+    eventDetails: {
+      name: "RailTrans Expo 2026",
+      date: "03–04 July 2026",
+      venue: "Halls 12 & 12A, Bharat Mandapam, New Delhi",
+      tagline: "Asia’s Second Largest Event for Railways, Transport & Semiconductor Industry"
+    },
+    termsUrl: "/uploads/terms.pdf",
+    termsRequired: true,
+    termsLabel: "I accept the Terms & Conditions",
+    fields: [
+      { name: "name", label: "Full name", type: "text", required: true, visible: true },
+      { name: "email", label: "Email", type: "email", required: true, visible: true },
+      { name: "company", label: "Company", type: "text", required: false, visible: true }
+    ]
+  };
+  res.json(exampleConfig);
+});
 
-// Import all registration and config routes
-const visitorsRoutes = require('./routes/visitors');
-const speakersRoutes = require('./routes/speakers');
-const partnersRoutes = require('./routes/partners');
-const exhibitorsRoutes = require('./routes/exhibitors');
-const awardeesRoutes = require('./routes/awardees');
-const exhibitorConfigRoutes = require('./routes/exhibitorConfig');
-const visitorConfigRoutes = require('./routes/visitorConfig');
-const partnerConfigRoutes = require('./routes/partnerConfig');
-const speakerConfigRoutes = require('./routes/speakerConfig');
-const awardeeConfigRoutes = require('./routes/awardeeConfig');
-const imageUploadRoutes = require('./routes/imageUpload');
+// Helper to safely require route modules without crashing server if a file is missing.
+// If the module cannot be required, returns a router that responds 501 on each path.
+function safeRequireRoutes(routePath, name) {
+  try {
+    const mod = require(routePath);
+    // If the module is an express.Router or function, return it; else try to return as router.default
+    if (typeof mod === "function" || typeof mod === "object") return mod;
+    return mod.default || mod;
+  } catch (err) {
+    console.warn(`Warning: route module ${routePath} (${name}) could not be loaded:`, err && err.message);
+    const r = express.Router();
+    r.all("/*", (req, res) => res.status(501).json({ error: `Route ${name} not implemented on server` }));
+    return r;
+  }
+}
 
-// --- NEW: adminConfig route (make sure this file exists)
-const adminConfigRoutes = require('./routes/adminConfig');
+// Import registration/config routes (use safeRequireRoutes)
+const visitorsRoutes = safeRequireRoutes("./routes/visitors", "visitors");
+const speakersRoutes = safeRequireRoutes("./routes/speakers", "speakers");
+const partnersRoutes = safeRequireRoutes("./routes/partners", "partners");
+const exhibitorsRoutes = safeRequireRoutes("./routes/exhibitors", "exhibitors");
+const awardeesRoutes = safeRequireRoutes("./routes/awardees", "awardees");
 
-// --- OTP, Payment, Email routes ---
-const otpRoutes = require('./routes/otp');
-const paymentRoutes = require('./routes/payment');
-const emailRoutes = require('./routes/email');
+const exhibitorConfigRoutes = safeRequireRoutes("./routes/exhibitorConfig", "exhibitor-config");
+const visitorConfigRoutes = safeRequireRoutes("./routes/visitorConfig", "visitor-config");
+const partnerConfigRoutes = safeRequireRoutes("./routes/partnerConfig", "partner-config");
+const speakerConfigRoutes = safeRequireRoutes("./routes/speakerConfig", "speaker-config");
+const awardeeConfigRoutes = safeRequireRoutes("./routes/awardeeConfig", "awardee-config");
+const imageUploadRoutes = safeRequireRoutes("./routes/imageUpload", "image-upload");
+
+// Admin config route
+const adminConfigRoutes = safeRequireRoutes("./routes/adminConfig", "admin-config");
+
+// OTP, Payment, Email routes
+const otpRoutes = safeRequireRoutes("./routes/otp", "otp");
+const paymentRoutes = safeRequireRoutes("./routes/payment", "payment");
+const emailRoutes = safeRequireRoutes("./routes/email", "email");
+
+// Additional routes that may be used by frontend
+const ticketsScanRoutes = safeRequireRoutes("./routes/tickets-scan", "tickets-scan");
 
 // Mount registration and config routes
-app.use('/api/visitors', visitorsRoutes);
-app.use('/api/speakers', speakersRoutes);
-app.use('/api/partners', partnersRoutes);
-app.use('/api/exhibitors', exhibitorsRoutes);
-app.use('/api/awardees', awardeesRoutes);
-app.use('/api/exhibitor-config', exhibitorConfigRoutes);
-app.use('/api/visitor-config', visitorConfigRoutes); // your real visitorConfig route (may also respond)
-app.use('/api/partner-config', partnerConfigRoutes);
-app.use('/api/speaker-config', speakerConfigRoutes);
-app.use('/api/awardee-config', awardeeConfigRoutes);
-app.use('/api', imageUploadRoutes);
+app.use("/api/visitors", visitorsRoutes);
+app.use("/api/speakers", speakersRoutes);
+app.use("/api/partners", partnersRoutes);
+app.use("/api/exhibitors", exhibitorsRoutes);
+app.use("/api/awardees", awardeesRoutes);
 
-// mount adminConfig under /api so endpoints are /api/admin-config and /api/admin-config/upload
-app.use('/api', adminConfigRoutes);
+// Config endpoints (note: the fallback above will always respond if nothing else)
+app.use("/api/exhibitor-config", exhibitorConfigRoutes);
+app.use("/api/visitor-config", visitorConfigRoutes);
+app.use("/api/partner-config", partnerConfigRoutes);
+app.use("/api/speaker-config", speakerConfigRoutes);
+app.use("/api/awardee-config", awardeeConfigRoutes);
+
+// image upload and admin config
+app.use("/api", imageUploadRoutes);
+app.use("/api", adminConfigRoutes);
 
 // OTP/Payment/Email
-app.use('/api/otp', otpRoutes);
-app.use('/api/payment', paymentRoutes);
-app.use('/api/email', emailRoutes);
-app.use('/api/mailer', emailRoutes); // same handler
-app.use("/api/tickets", require("./routes/tickets-scan"));
+app.use("/api/otp", otpRoutes);
+app.use("/api/payment", paymentRoutes);
+
+// Mount email route under /api/email and /api/mailer for backward compatibility
+app.use("/api/email", emailRoutes);
+app.use("/api/mailer", emailRoutes);
+
+// Tickets scan/routes
+app.use("/api/tickets", ticketsScanRoutes);
+
+// Optional: expose reminders and tickets-upgrade if present
+const remindersRoutes = safeRequireRoutes("./routes/reminders", "reminders");
+app.use("/api/reminders", remindersRoutes);
+
+const ticketsUpgradeRoutes = safeRequireRoutes("./routes/tickets-upgrade", "tickets-upgrade");
+app.use("/api/tickets/upgrade", ticketsUpgradeRoutes);
 
 // Health + SMTP diagnostics
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
-    smtpConfigured: !!(process.env.SMTP_HOST || process.env.SMTP_SERVICE),
+    smtpConfigured: !!(process.env.SMTP_HOST || process.env.SMTP_SERVICE || process.env.SMTP_USER),
     host: process.env.SMTP_HOST || process.env.SMTP_SERVICE || null,
+    uploadsDirExists: fs.existsSync(uploadsDir),
   });
 });
 
@@ -142,5 +189,5 @@ app.use((err, req, res, next) => {
 
 // Start
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on http://localhost:${PORT} (PORT=${PORT})`);
 });
