@@ -1,9 +1,32 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import Topbar from "../components/Topbar";
 import DynamicRegistrationForm from "./DynamicRegistrationForm";
 import ThankYouMessage from "../components/ThankYouMessage";
 
-const API_BASE = (window.__API_BASE__ || "http://localhost:5000").replace(/\/$/, "");
+function getApiBaseFromEnvOrWindow() {
+  if (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) return process.env.REACT_APP_API_BASE.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.__API_BASE__) return String(window.__API_BASE__).replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) return String(window.__CONFIG__.backendUrl).replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location && window.location.origin) return window.location.origin.replace(/\/$/, "");
+  return "http://localhost:5000";
+}
+function apiUrl(path) {
+  const base = getApiBaseFromEnvOrWindow();
+  if (!path) return base;
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+}
+function normalizeAdminUrl(url) {
+  if (!url) return "";
+  const trimmed = String(url).trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("//")) return window.location.protocol + trimmed;
+  if (trimmed.startsWith("/")) return apiUrl(trimmed);
+  return apiUrl(trimmed);
+}
+
+const API_BASE = getApiBaseFromEnvOrWindow();
 
 /* ---------- Small helpers to pick fields robustly ---------- */
 function pickFirstString(obj, candidates = []) {
@@ -51,7 +74,7 @@ async function postJSON(url, body) {
 
 async function saveStep(stepName, data = {}, meta = {}) {
   try {
-    await fetch(`${API_BASE}/api/partners/step`, {
+    await fetch(apiUrl("/api/partners/step"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
       body: JSON.stringify({ step: stepName, data, meta }),
@@ -61,14 +84,14 @@ async function saveStep(stepName, data = {}, meta = {}) {
   }
 }
 
-/* ---------- UI bits (unchanged) ---------- */
-function ImageSlider({ images = [] }) {
+/* ---------- UI bits ---------- */
+function ImageSlider({ images = [], intervalMs = 3500 }) {
   const [active, setActive] = useState(0);
   useEffect(() => {
     if (!images || images.length === 0) return;
-    const t = setInterval(() => setActive((p) => (p + 1) % images.length), 3500);
+    const t = setInterval(() => setActive((p) => (p + 1) % images.length), intervalMs);
     return () => clearInterval(t);
-  }, [images]);
+  }, [images, intervalMs]);
   if (!images || images.length === 0) return <div className="text-[#21809b]">No images available</div>;
   return (
     <div className="flex flex-col items-center justify-center w-full h-full">
@@ -121,14 +144,111 @@ export default function Partners() {
   const [reminderScheduled, setReminderScheduled] = useState(false);
   const [reminderError, setReminderError] = useState("");
 
+  const videoRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(false);
+
   useEffect(() => {
-    let mounted = true;
-    fetch(`${API_BASE}/api/partner-config`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Failed to fetch config"))))
-      .then((cfg) => { if (!mounted) return; setConfig(cfg || {}); setLoading(false); })
-      .catch(() => { if (!mounted) return; setConfig({}); setLoading(false); });
-    return () => (mounted = false);
+    const mq = window.matchMedia("(max-width: 640px)");
+    const onChange = () => setIsMobile(!!mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", onChange); else mq.removeListener(onChange); };
   }, []);
+
+  const fetchConfig = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(apiUrl("/api/partner-config?cb=" + Date.now()), { cache: "no-store", headers: { Accept: "application/json" } });
+      const cfg = res.ok ? await res.json() : {};
+      const normalized = { ...(cfg || {}) };
+
+      // normalize backgroundMedia
+      if (normalized.backgroundMedia && normalized.backgroundMedia.url) {
+        normalized.backgroundMedia = { type: normalized.backgroundMedia.type || "image", url: normalizeAdminUrl(normalized.backgroundMedia.url) };
+      } else {
+        const candidate = normalized.backgroundVideo || normalized.backgroundImage || normalized.background_image || "";
+        if (candidate) {
+          const isVideo = typeof candidate === "string" && /\.(mp4|webm|ogg)(\?|$)/i.test(candidate);
+          normalized.backgroundMedia = { type: isVideo ? "video" : "image", url: normalizeAdminUrl(candidate) };
+        } else {
+          normalized.backgroundMedia = { type: "image", url: "" };
+        }
+      }
+
+      normalized.termsUrl = normalized.termsUrl ? normalizeAdminUrl(normalized.termsUrl) : (normalized.terms || "");
+      normalized.termsText = normalized.termsText || "";
+      normalized.termsLabel = normalized.termsLabel || "Terms & Conditions";
+      normalized.termsRequired = !!normalized.termsRequired;
+
+      normalized.fields = Array.isArray(normalized.fields) ? normalized.fields : [];
+      // strip accept_terms-like fields from rendered fields
+      normalized.fields = normalized.fields.filter(f => {
+        if (!f || typeof f !== "object") return false;
+        const name = (f.name || "").toString().toLowerCase().replace(/\s+/g,"");
+        const label = (f.label || "").toString().toLowerCase();
+        if (["accept_terms","acceptterms","i_agree","agree"].includes(name)) return false;
+        if (f.type === "checkbox" && (label.includes("i agree") || label.includes("accept the terms") || label.includes("terms & conditions") || label.includes("terms and conditions"))) return false;
+        return true;
+      });
+
+      normalized.images = Array.isArray(normalized.images) ? normalized.images.map(normalizeAdminUrl) : [];
+
+      setConfig(normalized);
+    } catch (e) {
+      console.error("fetchConfig error", e);
+      setConfig({ fields: [], images: [], backgroundMedia: { type: "image", url: "" }, eventDetails: {} });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchConfig();
+    const onCfg = () => fetchConfig();
+    window.addEventListener("partner-config-updated", onCfg);
+    return () => window.removeEventListener("partner-config-updated", onCfg);
+  }, [fetchConfig]);
+
+  // try to autoplay background video on desktop (best-effort)
+  useEffect(() => {
+    if (isMobile) return;
+    const v = videoRef.current;
+    if (!v || !config?.backgroundMedia?.url || config.backgroundMedia.type !== "video") return;
+    let mounted = true;
+    let attemptId = 0;
+    const prevSrc = { src: v.src || "" };
+
+    async function tryPlay() {
+      const myId = ++attemptId;
+      try {
+        const currentSrc = v.currentSrc || v.src || "";
+        if (prevSrc.src !== currentSrc) { try { v.load(); } catch {} prevSrc.src = currentSrc; }
+        await new Promise((resolve, reject) => {
+          if (!mounted) return reject(new Error("unmounted"));
+          if (v.readyState >= 3) return resolve();
+          const onCan = () => { cleanup(); resolve(); };
+          const onErr = () => { cleanup(); reject(new Error("media error")); };
+          const timer = setTimeout(() => { cleanup(); resolve(); }, 3000);
+          function cleanup() { clearTimeout(timer); v.removeEventListener("canplay", onCan); v.removeEventListener("error", onErr); }
+          v.addEventListener("canplay", onCan);
+          v.addEventListener("error", onErr);
+        });
+        if (!mounted || myId !== attemptId) return;
+        await v.play();
+      } catch (err) {
+        // decorative video only - ignore
+      }
+    }
+
+    const onCan = () => tryPlay();
+    const onErr = () => {};
+    v.addEventListener("canplay", onCan);
+    v.addEventListener("error", onErr);
+    tryPlay();
+
+    return () => { mounted = false; attemptId++; try { v.removeEventListener("canplay", onCan); v.removeEventListener("error", onErr); } catch {} };
+  }, [config?.backgroundMedia?.url, isMobile]);
 
   // send acknowledgement email using backend mailer
   async function sendAckEmail(partnerPayload, partnerId = null) {
@@ -155,7 +275,7 @@ RailTrans Expo Team`;
     const html = `<p>Hello ${name || ""},</p><p>Thank you for your partner request. We have received your details and our team will get back to you soon.</p><p>Regards,<br/>RailTrans Expo Team</p>`;
 
     try {
-      const { ok, status, body } = await postJSON(`${API_BASE}/api/mailer`, { to, subject, text, html });
+      const { ok, status, body } = await postJSON(apiUrl("/api/mailer"), { to, subject, text, html });
       setAckLoading(false);
       if (!ok) {
         const msg = (body && (body.error || body.message)) || `Mailer failed (${status})`;
@@ -178,7 +298,7 @@ RailTrans Expo Team`;
     }
   }
 
-  // schedule reminder via backend (backend must compute time from event details)
+  // schedule reminder via backend
   async function scheduleReminder(partnerId) {
     setReminderError("");
     try {
@@ -187,7 +307,7 @@ RailTrans Expo Team`;
         setReminderError("Event date not available to schedule reminder");
         return { ok: false, error: "no-event-date" };
       }
-      const { ok, status, body } = await postJSON(`${API_BASE}/api/partners/schedule-reminder`, { partnerId, eventDate });
+      const { ok, status, body } = await postJSON(apiUrl("/api/partners/schedule-reminder"), { partnerId, eventDate });
       if (!ok) {
         const msg = (body && (body.error || body.message)) || `Schedule failed (${status})`;
         setReminderError(msg);
@@ -246,7 +366,7 @@ RailTrans Expo Team`;
     await saveStep("partner_attempt", { form: payload }).catch(()=>{});
 
     try {
-      const { ok, status, body } = await postJSON(`${API_BASE}/api/partners`, payload);
+      const { ok, status, body } = await postJSON(apiUrl("/api/partners"), payload);
       if (!ok) {
         const errMsg = (body && (body.message || body.error)) || `Save failed (${status})`;
         throw new Error(errMsg);
@@ -260,7 +380,7 @@ RailTrans Expo Team`;
       setForm(payload);
       setStep(2);
 
-      // Background: auto-send acknowledgement and auto-schedule reminder (no UI interaction needed)
+      // Background: auto-send acknowledgement and auto-schedule reminder
       (async () => {
         try {
           await sendAckEmail(payload, insertedId).catch(()=>{});
@@ -284,8 +404,16 @@ RailTrans Expo Team`;
   }
 
   return (
-    <div className="min-h-screen w-full relative" style={{ backgroundImage: `url(/images/train.png)`, backgroundSize: "cover", backgroundPosition: "center" }}>
-      <div className="absolute inset-0 bg-white/50 pointer-events-none" />
+    <div className="min-h-screen w-full relative">
+      {/* Background media */}
+      {!isMobile && config?.backgroundMedia?.type === "video" && config?.backgroundMedia?.url ? (
+        <video ref={videoRef} src={config.backgroundMedia.url} autoPlay muted loop playsInline preload="auto" crossOrigin="anonymous" style={{ position: "fixed", inset: 0, width: "100%", height: "100%", objectFit: "cover", zIndex: -999 }} />
+      ) : (config?.backgroundMedia?.type === "image" && config?.backgroundMedia?.url) ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: -999, backgroundImage: `url(${config.backgroundMedia.url})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+      ) : null}
+
+      <div style={{ position: "fixed", inset: 0, background: "rgba(255,255,255,0.55)", zIndex: -900 }} />
+
       <div className="relative z-10">
         <Topbar />
         <div className="max-w-7xl mx-auto pt-8">
@@ -305,7 +433,15 @@ RailTrans Expo Team`;
           </div>
 
           {!loading && step === 1 && config?.fields && (
-            <DynamicRegistrationForm config={config} form={form} setForm={setForm} onSubmit={handleSubmit} editable={true} saving={saving} />
+            <DynamicRegistrationForm
+              config={{ ...config, fields: config.fields }}
+              form={form}
+              setForm={setForm}
+              onSubmit={handleSubmit}
+              editable={true}
+              saving={saving}
+              terms={(config && (config.termsUrl || config.termsText)) ? { url: config.termsUrl, text: config.termsText, label: config.termsLabel || "Terms & Conditions", required: !!config.termsRequired } : null}
+            />
           )}
 
           {step === 2 && (
