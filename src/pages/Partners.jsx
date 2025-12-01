@@ -53,7 +53,7 @@ async function saveStep(stepName, data = {}, meta = {}) {
   try {
     await fetch(`${API_BASE}/api/partners/step`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
       body: JSON.stringify({ step: stepName, data, meta }),
     });
   } catch (e) {

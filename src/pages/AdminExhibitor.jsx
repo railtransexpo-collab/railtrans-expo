@@ -88,7 +88,7 @@ export default function ExhibitorsAdmin() {
     try {
       const res = await fetch(`/api/exhibitors/${id}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify({ admin: "web-admin" }),
       });
 
@@ -126,7 +126,7 @@ export default function ExhibitorsAdmin() {
     try {
       const res = await fetch(`/api/exhibitors/${id}/cancel`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify({ admin: "web-admin" }),
       });
       const js = await res.json().catch(() => null);
@@ -145,7 +145,7 @@ export default function ExhibitorsAdmin() {
     try {
       const res = await fetch(`/api/exhibitors/${edited.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(edited),
       });
       const js = await res.json().catch(() => null);

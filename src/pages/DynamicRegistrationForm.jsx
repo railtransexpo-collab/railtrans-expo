@@ -8,7 +8,9 @@ function isVisible(field, form) {
 
 // Very simple email validator
 function isEmail(str) {
-  return typeof str === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(str.trim());
+  return (
+    typeof str === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(str.trim())
+  );
 }
 
 // Small helper for a simple request id
@@ -19,7 +21,13 @@ function makeRequestId() {
 /* Email OTP verifier kept minimal and defensive.
    If your app already has an OTP flow you can adapt this to call the same endpoints.
 */
-function EmailOtpVerifier({ email, fieldName, setForm, verified, setVerified }) {
+function EmailOtpVerifier({
+  email,
+  fieldName,
+  setForm,
+  verified,
+  setVerified,
+}) {
   const [otpSent, setOtpSent] = useState(false);
   const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
@@ -49,14 +57,19 @@ function EmailOtpVerifier({ email, fieldName, setForm, verified, setVerified }) 
       const requestId = makeRequestId();
       const res = await fetch(`/api/otp/send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "69420",
+        },
         body: JSON.stringify({ type: "email", value: emailNorm, requestId }),
       });
       const data = await res.json().catch(() => null);
       if (res.ok && data && data.success) {
         setOtpSent(true);
         setMsg("OTP sent to your email.");
-        try { localStorage.setItem("otpEmail", emailNorm); } catch {}
+        try {
+          localStorage.setItem("otpEmail", emailNorm);
+        } catch {}
       } else {
         setError((data && data.error) || "Failed to send OTP");
       }
@@ -88,7 +101,11 @@ function EmailOtpVerifier({ email, fieldName, setForm, verified, setVerified }) 
           localStorage.setItem("verifiedEmail", verifiedAddr);
           sessionStorage.setItem("verifiedEmail", verifiedAddr);
           if (typeof setForm === "function" && fieldName) {
-            setForm(prev => ({ ...prev, [fieldName]: verifiedAddr, otpVerified: true }));
+            setForm((prev) => ({
+              ...prev,
+              [fieldName]: verifiedAddr,
+              otpVerified: true,
+            }));
           }
         } catch {}
       } else {
@@ -102,14 +119,21 @@ function EmailOtpVerifier({ email, fieldName, setForm, verified, setVerified }) 
     }
   }
 
-  if (verified) return <span className="ml-3 text-green-600 font-semibold text-xs">Verified ✓</span>;
+  if (verified)
+    return (
+      <span className="ml-3 text-green-600 font-semibold text-xs">
+        Verified ✓
+      </span>
+    );
 
   return (
     <div className="flex items-center gap-2 mt-2">
       {!otpSent ? (
         <button
           type="button"
-          className={`ml-2 px-3 py-1 rounded bg-[#21809b] text-white text-xs font-medium shadow transition-all duration-150 hover:bg-[#196e87] active:scale-95 ${loading ? "opacity-60 cursor-not-allowed" : ""}`}
+          className={`ml-2 px-3 py-1 rounded bg-[#21809b] text-white text-xs font-medium shadow transition-all duration-150 hover:bg-[#196e87] active:scale-95 ${
+            loading ? "opacity-60 cursor-not-allowed" : ""
+          }`}
           onClick={handleSendOtp}
           disabled={!isEmailValid || loading}
           title={!isEmailValid ? "Enter a valid email first" : "Send OTP"}
@@ -121,7 +145,9 @@ function EmailOtpVerifier({ email, fieldName, setForm, verified, setVerified }) 
           <input
             type="text"
             value={otp}
-            onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+            onChange={(e) =>
+              setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))
+            }
             placeholder="Enter OTP"
             className="border px-2 py-1 rounded text-xs"
             maxLength={6}
@@ -154,51 +180,47 @@ export default function DynamicRegistrationForm({
   const [emailVerified, setEmailVerified] = useState(false);
 
   // Debug: log config/form shape to help diagnose missing fields
-  React.useEffect(() => {
+  useEffect(() => {
     console.debug("DynamicRegistrationForm config:", config);
     console.debug("DynamicRegistrationForm form:", form);
   }, [config, form]);
-  
+
   function handleChange(e) {
     const { name, value, type, checked } = e.target;
     if (type === "email") {
       const v = (value || "").trim();
-      setForm(f => ({ ...f, [name]: v }));
+      setForm((f) => ({ ...f, [name]: v }));
       return;
     }
-    setForm(f => ({ ...f, [name]: type === "checkbox" ? checked : value }));
+    setForm((f) => ({ ...f, [name]: type === "checkbox" ? checked : value }));
   }
 
   // Provide a handler for terms checkbox (keeps form.termsAccepted)
   function handleTermsChange(e) {
     const checked = !!e.target.checked;
-    setForm(f => ({ ...f, termsAccepted: checked }));
+    setForm((f) => ({ ...f, termsAccepted: checked }));
   }
 
-  const safeFields = (config?.fields || []).filter(f =>
-    f.visible !== false &&
-    f.name &&
-    f.label &&
-    isVisible(f, form)
+  const safeFields = (config?.fields || []).filter(
+    (f) => f.visible !== false && f.name && f.label && isVisible(f, form)
   );
 
-  const emailField = safeFields.find(f => f.type === "email");
-  const emailValue = emailField ? (form[emailField.name] || "") : "";
+  const emailField = safeFields.find((f) => f.type === "email");
+  const emailValue = emailField ? form[emailField.name] || "" : "";
 
   const termsRequired = terms && terms.required;
 
   return (
     <form
-      onSubmit={e => {
+      onSubmit={(e) => {
         e.preventDefault();
         // enforce terms if required
         if (termsRequired && !form?.termsAccepted) {
-          // optionally show a message - set an error state on parent; here we prevent submit
           alert("Please accept the Terms & Conditions before continuing.");
           return;
         }
-        if (emailField?.required && !emailVerified) {
-          // block submit until verification
+        // Only block submit for email verification when OTP is required by field metadata
+        if (emailField?.required && emailField.meta?.useOtp && !emailVerified) {
           alert("Please verify your email to continue.");
           return;
         }
@@ -207,9 +229,13 @@ export default function DynamicRegistrationForm({
       className="mx-auto w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-[#bde0fe] p-8"
     >
       <div className="flex flex-col gap-7">
-        {safeFields.length === 0 && <div className="text-red-500 text-center">No fields configured for this form.</div>}
+        {safeFields.length === 0 && (
+          <div className="text-red-500 text-center">
+            No fields configured for this form.
+          </div>
+        )}
 
-        {safeFields.map(field => (
+        {safeFields.map((field) => (
           <div key={field.name}>
             {field.type === "checkbox" ? (
               <div className="flex items-center gap-2 mt-2">
@@ -225,9 +251,13 @@ export default function DynamicRegistrationForm({
               </div>
             ) : (
               <>
-                <label className="font-semibold text-[#21809b] text-lg">{field.label}</label>
+                <label className="font-semibold text-[#21809b] text-lg">
+                  {field.label}
+                </label>
 
-                {(field.type === "text" || field.type === "email" || field.type === "number") && (
+                {(field.type === "text" ||
+                  field.type === "email" ||
+                  field.type === "number") && (
                   <div className="flex items-center">
                     <input
                       type={field.type}
@@ -238,7 +268,7 @@ export default function DynamicRegistrationForm({
                       disabled={!editable}
                       required={field.required}
                     />
-                    {field.type === "email" && (
+                    {field.type === "email" && field.meta?.useOtp && (
                       <EmailOtpVerifier
                         email={form[field.name]}
                         fieldName={field.name}
@@ -272,14 +302,29 @@ export default function DynamicRegistrationForm({
                     required={field.required}
                   >
                     <option value="">Select {field.label}</option>
-                    {(field.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    {(field.options || []).map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
                   </select>
                 )}
 
                 {field.type === "radio" && (
-                  <div className="flex gap-4 mt-2">
-                    {(field.options || []).map(opt => (
-                      <label key={opt} className="flex items-center gap-2">
+                  <div className="flex flex-col gap-3 mt-2">
+                    {(field.options || []).map((opt) => (
+                      <label
+                        key={opt}
+                        className={`
+          flex items-center gap-3 px-4 py-2 border rounded-lg cursor-pointer
+          bg-white shadow-sm whitespace-nowrap text-sm
+          ${
+            form[field.name] === opt
+              ? "border-[#21809b] bg-[#e8f6ff]"
+              : "border-gray-300"
+          }
+        `}
+                      >
                         <input
                           type="radio"
                           name={field.name}
@@ -288,8 +333,10 @@ export default function DynamicRegistrationForm({
                           onChange={handleChange}
                           disabled={!editable}
                           required={field.required}
+                          className="h-4 w-4 text-[#21809b]"
                         />
-                        <span>{opt}</span>
+
+                        <span className="font-medium text-gray-700">{opt}</span>
                       </label>
                     ))}
                   </div>
@@ -314,12 +361,21 @@ export default function DynamicRegistrationForm({
                 <span className="text-gray-700">
                   {terms.label || "I accept the Terms & Conditions"}{" "}
                   {terms.url && (
-                    <a href={terms.url} target="_blank" rel="noopener noreferrer" className="text-[#21809b] underline">
+                    <a
+                      href={terms.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[#21809b] underline"
+                    >
                       (View)
                     </a>
                   )}
                 </span>
-                {terms.required && <div className="text-xs text-red-600 mt-1">You must accept the terms to continue.</div>}
+                {terms.required && (
+                  <div className="text-xs text-red-600 mt-1">
+                    You must accept the terms to continue.
+                  </div>
+                )}
               </div>
             </label>
           </div>
@@ -329,8 +385,20 @@ export default function DynamicRegistrationForm({
           <button
             type="submit"
             className="px-8 py-3 rounded-xl bg-[#21809b] text-white font-semibold text-lg disabled:opacity-60"
-            disabled={!editable || safeFields.length === 0 || (emailField?.required && !emailVerified) || (emailField && emailField.required && !isEmail(emailValue)) || (termsRequired && !form?.termsAccepted)}
-            title={termsRequired && !form?.termsAccepted ? "Accept terms to continue" : undefined}
+            disabled={
+              !editable ||
+              safeFields.length === 0 ||
+              (emailField?.required &&
+                emailField.meta?.useOtp &&
+                !emailVerified) ||
+              (emailField && emailField.required && !isEmail(emailValue)) ||
+              (termsRequired && !form?.termsAccepted)
+            }
+            title={
+              termsRequired && !form?.termsAccepted
+                ? "Accept terms to continue"
+                : undefined
+            }
           >
             Submit
           </button>

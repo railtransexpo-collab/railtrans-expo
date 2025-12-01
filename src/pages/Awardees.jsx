@@ -44,7 +44,7 @@ async function toBase64(pdf) {
 async function sendMailPayload(payload) {
   const res = await fetch(`${API_BASE}/api/mailer`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+     headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
     body: JSON.stringify(payload),
   });
   let body = null;
@@ -131,7 +131,7 @@ export default function Awardees() {
     try {
       const res = await fetch(`${API_BASE}/api/awardees`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(payload),
       });
       const js = await res.json().catch(() => ({}));
@@ -193,7 +193,7 @@ export default function Awardees() {
       };
       const res = await fetch(`${API_BASE}/api/payment/create-order`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(payload),
       });
       const js = await res.json().catch(() => ({}));
@@ -302,7 +302,7 @@ export default function Awardees() {
           try {
             await fetch(`${API_BASE}/api/awardees/${encodeURIComponent(String(awardeeId))}/confirm`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+               headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
               body: JSON.stringify({ ticket_code: generated, force: true }),
             }).catch(() => {});
             ticket_code = generated;
@@ -317,7 +317,7 @@ export default function Awardees() {
           // attempt to save a row now (rare)
           try {
             const saveRes = await fetch(`${API_BASE}/api/awardees`, {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, ticket_code: generated })
+              method: "POST",  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify({ ...form, ticket_code: generated })
             });
             const saveJs = await saveRes.json().catch(() => ({}));
             if (saveRes.ok && saveJs.success && saveJs.insertedId) setAwardeeId(saveJs.insertedId);
@@ -337,7 +337,7 @@ export default function Awardees() {
       try {
         await fetch(`${API_BASE}/api/tickets/create`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+           headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
           body: JSON.stringify({
             ticket_code,
             entity_type: "awardee",
@@ -355,7 +355,7 @@ export default function Awardees() {
       try {
         await fetch(`${API_BASE}/api/awardees/${encodeURIComponent(String(awardeeId))}/confirm`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+           headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
           body: JSON.stringify({ ticket_category: chosen, txId: providerTxId || txId || null }),
         }).catch(() => {});
       } catch (e) {}
@@ -397,7 +397,7 @@ export default function Awardees() {
         if (form.mobile) {
           await fetch(`${API_BASE}/api/notify/whatsapp`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+             headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
             body: JSON.stringify({ to: form.mobile, message: `Your ticket code: ${ticket_code}` }),
           });
         }
