@@ -188,7 +188,7 @@ export default function TicketScanner({
     try {
       const res = await fetch(apiValidate, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify({ ticketId: extracted }),
       });
       const js = await res.json().catch(() => ({}));

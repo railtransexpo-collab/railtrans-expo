@@ -123,7 +123,7 @@ export default function SpeakersAdmin() {
     try {
       const res = await fetch("http://localhost:5000/api/speaker-config/config", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(config)
       });
       if (res.ok) setMsg("Saved!");

@@ -57,7 +57,7 @@ async function toBase64(pdf) {
 async function sendMailPayload(payload) {
   const res = await fetch(`${API_BASE}/api/mailer`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+     headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
     body: JSON.stringify(payload),
   });
   let body = null;
@@ -157,7 +157,7 @@ export default function Speakers() {
     try {
       const res = await fetch(`${API_BASE}/api/speakers`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(payload),
       });
       const js = await res.json().catch(() => ({}));
@@ -211,7 +211,7 @@ export default function Speakers() {
       };
       const res = await fetch(`${API_BASE}/api/payment/create-order`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(payload),
       });
       const js = await res.json().catch(() => ({}));
@@ -315,7 +315,7 @@ export default function Speakers() {
             )}/confirm`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+               headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
               body: JSON.stringify({ ticket_code: generated, force: true }),
             }
           ).catch(() => {});
@@ -338,7 +338,7 @@ export default function Speakers() {
       try {
         await fetch(`${API_BASE}/api/tickets/create`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+           headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
           body: JSON.stringify({
             ticket_code: fullSpeaker.ticket_code,
             entity_type: "speaker",
@@ -363,7 +363,7 @@ export default function Speakers() {
             )}/confirm`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+               headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
               body: JSON.stringify({
                 ticket_category: chosen,
                 txId: providerTxId || txId || null,
@@ -440,7 +440,7 @@ export default function Speakers() {
       try {
         await fetch(`${API_BASE}/api/notify/whatsapp`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+           headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
           body: JSON.stringify({
             to: fullSpeaker.mobile,
             message: `Your RailTrans Expo ticket code: ${fullSpeaker.ticket_code}`,

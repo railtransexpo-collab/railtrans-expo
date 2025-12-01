@@ -457,7 +457,7 @@ export default function DashboardContent() {
 
           const res = await fetch(base, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+             headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
             body: JSON.stringify(payload),
           });
           if (res.ok) {
@@ -711,7 +711,7 @@ export default function DashboardContent() {
           };
           const mailRes = await fetch("/api/email", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
             body: JSON.stringify(mailPayload),
           });
           if (!mailRes.ok) {

@@ -3,8 +3,8 @@ import DynamicRegistrationForm from "./DynamicRegistrationForm";
 
 function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-// Use REACT_APP_API_BASE or default to backend on port 5000
-const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:5000").replace(/\/$/, "");
+// Use REACT_APP_API_BASE, or window.__API_BASE__, or default to backend on port 5000
+const API_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || "http://localhost:5000").replace(/\/$/, "");
 
 /**
  * Upload helper: sends 'file' field to the backend upload endpoint.
@@ -25,79 +25,18 @@ async function uploadFileToServer(file, endpoint = "/api/upload-asset") {
 }
 
 /**
- * Default visitor registration fields to ensure they exist in the config.
- * All are set visible:true and required:true per the user's request.
+ * Important: default fields use names expected by backend (see registerVisitor)
  */
 const DEFAULT_VISITOR_FIELDS = [
-  {
-    name: "surname",
-    label: "Surname",
-    type: "radio",
-    options: ["Mr.", "Ms.", "Dr."],
-    required: true,
-    visible: true,
-  },
-  {
-    name: "name",
-    label: "Name",
-    type: "text",
-    required: true,
-    visible: true,
-  },
-  {
-    name: "mobile",
-    label: "Mobile No.",
-    type: "number",
-    required: true,
-    visible: true,
-    // marking OTP intent so other parts of app can use it if supported
-    meta: { useOtp: true },
-  },
-  {
-    name: "email",
-    label: "Email ID",
-    type: "email",
-    required: true,
-    visible: true,
-    meta: { useOtp: true },
-  },
-  {
-    name: "designation",
-    label: "Designation",
-    type: "text",
-    required: true,
-    visible: true,
-  },
-  {
-    name: "company_or_other",
-    label: "Company / Other",
-    type: "radio",
-    options: ["Company", "Other"],
-    required: true,
-    visible: true,
-  },
-  // follow-up fields (both present and visible/required for now as requested)
-  {
-    name: "company_text",
-    label: "Company (if selected)",
-    type: "text",
-    required: true,
-    visible: true,
-  },
-  {
-    name: "other_details",
-    label: "Other (if selected)",
-    type: "textarea",
-    required: true,
-    visible: true,
-  },
-  {
-    name: "purpose",
-    label: "Purpose of Visit",
-    type: "textarea",
-    required: true,
-    visible: true,
-  },
+  { name: "title", label: "Title", type: "radio", options: ["Mr.", "Ms.", "Dr."], required: true, visible: true },
+  { name: "name", label: "Name", type: "text", required: true, visible: true },
+  { name: "mobile", label: "Mobile No.", type: "number", required: true, visible: true, meta: { useOtp: true } },
+  { name: "email", label: "Email ID", type: "email", required: true, visible: true, meta: { useOtp: true } },
+  { name: "designation", label: "Designation", type: "text", required: true, visible: true },
+  { name: "company_type", label: "Company / Other", type: "radio", options: ["Company", "Other"], required: true, visible: true },
+  { name: "company", label: "Company (if selected)", type: "text", required: true, visible: true },
+  { name: "other_details", label: "Other (if selected)", type: "textarea", required: true, visible: true },
+  { name: "purpose", label: "Purpose of Visit", type: "textarea", required: true, visible: true },
 ];
 
 export default function VisitorsAdmin() {
@@ -112,7 +51,7 @@ export default function VisitorsAdmin() {
     let mounted = true;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/visitor-config`);
+        const res = await fetch(`${API_BASE}/api/visitor-config`,  { method: "POST",  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(config) },);
         if (!res.ok) throw new Error("Failed to fetch config");
         const cfg = await res.json();
         if (!mounted) return;
@@ -126,15 +65,16 @@ export default function VisitorsAdmin() {
           termsLabel: cfg.termsLabel || "Terms & Conditions",
           termsRequired: !!cfg.termsRequired,
           backgroundColor: cfg.backgroundColor || "#ffffff",
+          badgeTemplateUrl: cfg.badgeTemplateUrl || ""
         };
         normalized.fields = normalized.fields.map(f =>
           ["select","radio"].includes(f.type) ? { ...f, options: Array.isArray(f.options) ? f.options : [""] } : { ...f, options: Array.isArray(f.options) ? f.options : [] }
         );
 
-        // Ensure the default visitor registration fields exist (visible + required)
-        const existingNames = new Set(normalized.fields.map(f => f.name));
+        // Ensure defaults exist (don't duplicate by name)
+        const existing = new Set(normalized.fields.map(f => f.name));
         DEFAULT_VISITOR_FIELDS.forEach(def => {
-          if (!existingNames.has(def.name)) normalized.fields.push(clone(def));
+          if (!existing.has(def.name)) normalized.fields.push(clone(def));
         });
 
         setConfig(normalized);
@@ -209,12 +149,14 @@ export default function VisitorsAdmin() {
     setMsg("");
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/visitor-config/config`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
+      const res = await fetch(`${API_BASE}/api/visitor-config/config`, { method: "POST",  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(config) });
       if (!res.ok) {
         const txt = await res.text().catch(()=>"");
         throw new Error(txt || `HTTP ${res.status}`);
       }
       setMsg("Saved!");
+      // Dispatch an event so any visitors pages can re-fetch config immediately
+      try { window.dispatchEvent(new Event("visitor-config-updated")); } catch {}
     } catch (e) {
       console.error("saveConfig error:", e && (e.stack || e));
       setError("Error saving: " + (e && e.message ? e.message : ""));

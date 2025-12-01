@@ -100,7 +100,7 @@ export default function AdminPartners() {
     try {
       const res = await fetch(`/api/partners/${id}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify({ admin: "web-admin" }),
       });
       let js = null;
@@ -175,7 +175,7 @@ export default function AdminPartners() {
     try {
       const res = await fetch(`/api/partners/${edited.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(edited),
       });
       const js = await res.json().catch(() => null);

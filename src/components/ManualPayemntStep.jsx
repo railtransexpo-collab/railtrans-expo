@@ -56,7 +56,7 @@ export default function ManualPaymentStep({
 
       const res = await fetch("/api/payment/create-order", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(payload),
       });
 

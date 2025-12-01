@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 
 // CORS (kept permissive for dev - lock down in production)
 const allowedOrigins = [
-  process.env.APP_URL,
+  process.env.APP_URL,process.env.APP_URL2
 ];
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -36,7 +36,10 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+ res.setHeader(
+  'Access-Control-Allow-Headers',
+  'Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning'
+);
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -52,24 +55,24 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Add this BEFORE mounting your real routes so we always have a reachable endpoint.
 // This will help check whether the phone/ngrok requests reach your server.
 // Replace the payload with real data or remove this once the real route works.
-app.get("/api/visitor-config", (req, res) => {
-  console.log("[FALLBACK] /api/visitor-config requested from", req.headers.host || req.ip);
-  // Example minimal config that DynamicRegistrationForm will accept
-  const exampleConfig = {
-    backgroundMedia: { type: "image", url: "/uploads/bg.jpg" },
-    images: ["/uploads/img1.jpg", "/uploads/img2.jpg"],
-    eventDetails: { name: "RailTrans Expo", date: "2026-06-10", venue: "Expo Center" },
-    termsUrl: "/uploads/terms.pdf",
-    termsRequired: true,
-    termsLabel: "I accept the Terms & Conditions",
-    fields: [
-      { name: "name", label: "Full name", type: "text", required: true },
-      { name: "email", label: "Email", type: "email", required: true },
-      { name: "company", label: "Company", type: "text", required: false }
-    ]
-  };
-  res.json(exampleConfig);
-});
+// app.get("/api/visitor-config", (req, res) => {
+//   console.log("[FALLBACK] /api/visitor-config requested from", req.headers.host || req.ip);
+//   // Example minimal config that DynamicRegistrationForm will accept
+//   const exampleConfig = {
+//     backgroundMedia: { type: "image", url: "/uploads/bg.jpg" },
+//     images: ["/uploads/img1.jpg", "/uploads/img2.jpg"],
+//     eventDetails: { name: "RailTrans Expo", date: "2026-06-10", venue: "Expo Center" },
+//     termsUrl: "/uploads/terms.pdf",
+//     termsRequired: true,
+//     termsLabel: "I accept the Terms & Conditions",
+//     fields: [
+//       { name: "name", label: "Full name", type: "text", required: true },
+//       { name: "email", label: "Email", type: "email", required: true },
+//       { name: "company", label: "Company", type: "text", required: false }
+//     ]
+//   };
+//   res.json(exampleConfig);
+// });
 
 // Import all registration and config routes
 const visitorsRoutes = require('./routes/visitors');

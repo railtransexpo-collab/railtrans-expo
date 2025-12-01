@@ -25,7 +25,7 @@ export default function ExhibitorTicketForm() {
       total: meta.total
     };
     try {
-      const res = await fetch("/api/exhibitors", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      const res = await fetch("/api/exhibitors", { method: "POST",  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(payload) });
       const j = await res.json().catch(()=>null);
       if (!res.ok) throw new Error((j && (j.error || j.message)) || `HTTP ${res.status}`);
       setMsg("Exhibitor registered");
