@@ -3,25 +3,94 @@ import DynamicRegistrationForm from "./DynamicRegistrationForm";
 
 function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-// Use REACT_APP_API_BASE, or window.__API_BASE__, or default to backend on port 5000
-const API_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || "http://localhost:5000").replace(/\/$/, "");
+// Use REACT_APP_API_BASE, or REACT_APP_API_BASE_URL, or window.__API_BASE__, or default to ""
+const API_BASE = (
+  process.env.REACT_APP_API_BASE ||
+  process.env.REACT_APP_API_BASE_URL ||
+  window.__API_BASE__ ||
+  ""
+).replace(/\/$/, "");
 
 /**
- * Upload helper: sends 'file' field to the backend upload endpoint.
- * Adds the ngrok skip header to the request as requested.
+ * Normalize admin asset URLs:
+ * - If absolute (http/https) leave alone (but convert http->https on secure origins)
+ * - If relative (starts with "/") prefix with API_BASE (or window.location.origin if API_BASE is empty)
+ * - If bare path, prefix with API_BASE
  */
-async function uploadFileToServer(file, endpoint = "/api/upload-asset") {
+function normalizeAdminUrl(url) {
+  try {
+    if (!url) return "";
+    const s = String(url).trim();
+    if (!s) return "";
+    if (/^https?:\/\//i.test(s)) {
+      // convert http->https on secure pages for localhost-hosted assets behind ngrok
+      if (/^http:\/\//i.test(s) && typeof window !== "undefined" && window.location && window.location.protocol === "https:") {
+        try {
+          const parsed = new URL(s);
+          if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+            return window.location.origin + parsed.pathname + (parsed.search || "");
+          }
+        } catch {}
+        return s.replace(/^http:/i, "https:");
+      }
+      return s;
+    }
+    // relative path
+    if (s.startsWith("/")) {
+      if (API_BASE) return `${API_BASE.replace(/\/$/, "")}${s}`;
+      return `${window.location.origin.replace(/\/$/, "")}${s}`;
+    }
+    // bare path
+    if (API_BASE) return `${API_BASE.replace(/\/$/, "")}/${s.replace(/^\//, "")}`;
+    return `${window.location.origin.replace(/\/$/, "")}/${s.replace(/^\//, "")}`;
+  } catch (e) {
+    return String(url || "");
+  }
+}
+
+/**
+ * Upload helper: sends file to the backend upload endpoint.
+ * - endpoint: API path or absolute URL (default to /api/upload-asset)
+ * - fieldName: form field name expected by server ("file" by default)
+ * Returns the returned public URL (data.url || data.imageUrl || ...)
+ */
+async function uploadFileToServer(file, endpoint = "/api/upload-asset", fieldName = "file") {
+  if (!file) throw new Error("No file provided");
+  // Client-side file size guard (match server limits)
+  const MAX_SIZE = 250 * 1024 * 1024; // 250MB
+  if (file.size && file.size > MAX_SIZE) throw new Error(`File too large (${Math.round(file.size/1024/1024)}MB). Max ${MAX_SIZE/1024/1024}MB.`);
+
   const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint}`;
   const formData = new FormData();
-  formData.append("file", file);
-  const res = await fetch(url, { method: "POST", headers: { "ngrok-skip-browser-warning": "69420" }, body: formData });
+  formData.append(fieldName, file);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      // do not set Content-Type for FormData
+      "ngrok-skip-browser-warning": "69420",
+    },
+    body: formData,
+  });
+
+  // helpful error body capture
   if (!res.ok) {
-    let txt = "";
-    try { txt = await res.text(); } catch {}
-    throw new Error(`Upload failed (${res.status}) ${txt}`);
+    let bodyText = "";
+    try { bodyText = await res.text(); } catch {}
+    // try to extract JSON error message
+    try {
+      const parsed = JSON.parse(bodyText || "{}");
+      if (parsed && (parsed.error || parsed.message)) {
+        throw new Error(`Upload failed (${res.status}) ${JSON.stringify(parsed)}`);
+      }
+    } catch (e) {
+      // ignore parse error
+    }
+    throw new Error(`Upload failed (${res.status}) ${bodyText}`);
   }
-  const data = await res.json();
-  return data.imageUrl || data.fileUrl || data.url || data.path || "";
+
+  const data = await res.json().catch(() => ({}));
+  return data.url || data.imageUrl || data.fileUrl || data.path || "";
 }
 
 /**
@@ -71,6 +140,22 @@ export default function VisitorsAdmin() {
           backgroundColor: cfg.backgroundColor || "#ffffff",
           badgeTemplateUrl: cfg.badgeTemplateUrl || ""
         };
+
+        // normalize image/background/terms urls so admin preview works for both relative and absolute urls
+        if (Array.isArray(normalized.images)) {
+          normalized.images = normalized.images.map(u => normalizeAdminUrl(u));
+        } else {
+          normalized.images = [];
+        }
+        if (normalized.backgroundMedia && normalized.backgroundMedia.url) {
+          normalized.backgroundMedia = {
+            type: normalized.backgroundMedia.type || "image",
+            url: normalizeAdminUrl(normalized.backgroundMedia.url)
+          };
+        } else {
+          normalized.backgroundMedia = { type: "image", url: "" };
+        }
+        if (normalized.termsUrl) normalized.termsUrl = normalizeAdminUrl(normalized.termsUrl);
 
         normalized.fields = normalized.fields.map(f =>
           ["select","radio"].includes(f.type) ? { ...f, options: Array.isArray(f.options) ? f.options : [""] } : { ...f, options: Array.isArray(f.options) ? f.options : [] }
@@ -126,7 +211,7 @@ export default function VisitorsAdmin() {
   function addField() { setConfig(prev => { const cfg = clone(prev); cfg.fields.push({ name: `f${Date.now()}`, label: "New Field", type: "text", required:false, visible:true, options: [] }); return cfg; }); }
   function addCheckboxField() { setConfig(prev => { const cfg = clone(prev); cfg.fields.push({ name: `cb${Date.now()}`, label: "Checkbox", type: "checkbox", required:false, visible:true, options: [] }); return cfg; }); }
 
-  function updateImage(idx, value) { setConfig(prev => { const cfg = clone(prev); cfg.images[idx] = value; return cfg; }); }
+  function updateImage(idx, value) { setConfig(prev => { const cfg = clone(prev); cfg.images[idx] = value ? normalizeAdminUrl(value) : ""; return cfg; }); }
   function deleteImage(idx) { setConfig(prev => { const cfg = clone(prev); cfg.images.splice(idx,1); return cfg; }); }
   function addImage() { setConfig(prev => { const cfg = clone(prev); cfg.images.push(""); return cfg; }); }
   function updateEventDetail(key, value) { setConfig(prev => { const cfg = clone(prev); cfg.eventDetails = cfg.eventDetails || {}; cfg.eventDetails[key] = value; return cfg; }); }
@@ -138,14 +223,15 @@ export default function VisitorsAdmin() {
     setMsg("");
     setError(null);
     try {
-      const endpoint = key === "termsUrl" ? "/api/upload-file" : "/api/upload-asset";
-      const url = await uploadFileToServer(file, endpoint);
+      // use generic upload endpoints that expect field name "file"
+      const endpoint = (key === "termsUrl") ? "/api/upload-file" : "/api/upload-asset";
+      const url = await uploadFileToServer(file, endpoint, "file");
       setConfig(prev => {
         const cfg = clone(prev);
-        if (key === "images" && idx !== null) cfg.images[idx] = url;
-        else if (key === "termsUrl") cfg.termsUrl = url;
-        else if (key === "backgroundMedia") cfg.backgroundMedia = { type: mediaType, url };
-        else cfg[key] = url;
+        if (key === "images" && idx !== null) cfg.images[idx] = normalizeAdminUrl(url);
+        else if (key === "termsUrl") cfg.termsUrl = normalizeAdminUrl(url);
+        else if (key === "backgroundMedia") cfg.backgroundMedia = { type: mediaType, url: normalizeAdminUrl(url) };
+        else cfg[key] = normalizeAdminUrl(url);
         return cfg;
       });
       setMsg("Asset uploaded!");

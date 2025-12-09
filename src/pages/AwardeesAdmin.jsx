@@ -6,7 +6,7 @@ function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 const API_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || (() => {
   if (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) return window.__CONFIG__.backendUrl;
   if (typeof window !== "undefined" && window.location && window.location.origin) return window.location.origin;
-  return "http://localhost:5000";
+  return "/api";
 })()).replace(/\/$/, "");
 
 /**
@@ -83,6 +83,21 @@ function normalizeConfig(cfg = {}) {
   return config;
 }
 
+/* ---------- DEFAULT AWARDEE FIELDS ---------- */
+/* Add these defaults so admin UI shows expected fields even when DB config is empty */
+const DEFAULT_AWARDEE_FIELDS = [
+  { name: "nomination_for", label: "I would like to nominate for:", type: "select", options: ["Corporate Awards", "Individual Awards"], required: true, visible: true },
+  { name: "name", label: "Full name", type: "text", required: true, visible: true },
+  { name: "email", label: "Email", type: "email", required: true, visible: true },
+  { name: "mobile", label: "Mobile No.", type: "text", required: true, visible: true, meta: { useOtp: true } },
+  { name: "designation", label: "Designation", type: "text", required: false, visible: true },
+  { name: "organization", label: "Organization / Company", type: "text", required: false, visible: true },
+  { name: "awardType", label: "Award Type", type: "text", required: false, visible: true },
+  { name: "awardOther", label: "Other (if selected)", type: "textarea", required: false, visible: true },
+  { name: "bio", label: "Short Bio", type: "textarea", required: false, visible: true },
+];
+/* ---------- end defaults ---------- */
+
 export default function AwardeesAdmin() {
   const [config, setConfig] = useState(null);
   const [form, setForm] = useState({});
@@ -99,7 +114,19 @@ export default function AwardeesAdmin() {
         if (!res.ok) throw new Error(`Failed to fetch config (${res.status})`);
         const cfg = await res.json();
         if (!mounted) return;
-        setConfig(normalizeConfig(cfg));
+        const normalized = normalizeConfig(cfg);
+
+        // merge defaults: add any default fields not already present
+        try {
+          const existing = new Set((normalized.fields || []).map(f => (f && f.name) ? f.name : ""));
+          DEFAULT_AWARDEE_FIELDS.forEach(def => {
+            if (!existing.has(def.name)) normalized.fields.push(clone(def));
+          });
+        } catch (e) {
+          // ignore merge errors
+        }
+
+        setConfig(normalized);
       } catch (e) {
         console.error("AwardeesAdmin load config error:", e && (e.stack || e));
         setError("Error loading config from backend. See server logs.");

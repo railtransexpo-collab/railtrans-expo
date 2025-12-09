@@ -1,3 +1,4 @@
+/* Visitors.jsx - updated API_BASE handling */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Topbar from "../components/Topbar";
 import DynamicRegistrationForm from "./DynamicRegistrationForm";
@@ -9,8 +10,9 @@ import ProcessingCard from "../components/ProcessingCard";
 
 const API_BASE = (
   process.env.REACT_APP_API_BASE ||
+  process.env.REACT_APP_API_BASE_URL ||
   window.__API_BASE__ ||
-  "http://localhost:5000"
+  ""
 ).replace(/\/$/, "");
 
 /* ---------- small helpers ---------- */
@@ -140,8 +142,8 @@ function normalizeAdminUrl(url) {
     }
     return t;
   }
-  if (t.startsWith("/")) return API_BASE.replace(/\/$/, "") + t;
-  return API_BASE.replace(/\/$/, "") + "/" + t.replace(/^\//, "");
+  if (t.startsWith("/")) return (API_BASE || "").replace(/\/$/, "") + t;
+  return (API_BASE || "").replace(/\/$/, "") + "/" + t.replace(/^\//, "");
 }
 
 /* ---------- small presentational components (defined before usage) ---------- */
@@ -248,7 +250,6 @@ async function sendTicketEmailUsingTemplate({
       const js = await r.json().catch(() => null);
       const candidate = js?.logo_url || js?.logoUrl || js?.url || "";
       if (candidate) {
-        // normalizeAdminUrl will return absolute for relative values and leave absolute ones alone
         logoUrl = normalizeAdminUrl(candidate) || String(candidate).trim();
       }
     }
@@ -274,10 +275,8 @@ async function sendTicketEmailUsingTemplate({
     } catch {}
   }
 
-  // Ensure logoUrl is empty string if still falsy
   logoUrl = logoUrl || "";
 
-  // Debug output: inspect final value used in the email HTML
   try {
     console.debug("[sendTicketEmailUsingTemplate] resolved logoUrl:", logoUrl);
   } catch {}
@@ -290,12 +289,11 @@ async function sendTicketEmailUsingTemplate({
     company: visitor?.company || "",
     ticket_code: ticketCode,
     ticket_category: visitor?.ticket_category || visitor?.ticketCategory || "",
-    // bannerUrl is ignored in the template as requested
     badgePreviewUrl: badgePreviewUrl || "",
     downloadUrl,
     event: resolvedEvent || {},
     form: visitor || null,
-    logoUrl, // pass final absolute URL (or empty string) into template
+    logoUrl,
   };
 
   const { subject, text, html } = await buildTicketEmail(emailModel);
@@ -305,7 +303,7 @@ async function sendTicketEmailUsingTemplate({
     subject,
     text,
     html,
-    logoUrl, // absolute public URL returned by /api/admin/logo-url
+    logoUrl,
     attachments: [],
   };
 
@@ -355,13 +353,9 @@ export default function Visitors() {
     const mq = window.matchMedia("(max-width: 900px)");
     const onChange = () => setIsMobile(!!mq.matches);
     onChange();
-    mq.addEventListener
-      ? mq.addEventListener("change", onChange)
-      : mq.addListener(onChange);
+    mq.addEventListener ? mq.addEventListener("change", onChange) : mq.addListener(onChange);
     return () => {
-      mq.removeEventListener
-        ? mq.removeEventListener("change", onChange)
-        : mq.removeListener(onChange);
+      mq.removeEventListener ? mq.removeEventListener("change", onChange) : mq.removeListener(onChange);
     };
   }, []);
 

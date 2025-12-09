@@ -1,168 +1,276 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
-const { registerSpeaker } = require('../controllers/speakersController');
+const { ObjectId } = require('mongodb');
+const mongo = require('../utils/mongoClient'); // must expose getDb() or .db
+
+// parse JSON bodies for routes in this router
+router.use(express.json({ limit: '5mb' }));
+
+async function obtainDb() {
+  if (!mongo) return null;
+  if (typeof mongo.getDb === 'function') return await mongo.getDb();
+  if (mongo.db) return mongo.db;
+  return null;
+}
+
+function toIsoMysqlLike(val) {
+  if (!val) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(val)) return val;
+  try {
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().replace('T', ' ').substring(0, 19);
+  } catch {
+    return null;
+  }
+}
+
+function docToOutput(doc) {
+  if (!doc) return null;
+  const out = { ...doc };
+  if (out._id) {
+    out.id = String(out._id);
+    delete out._id;
+  } else {
+    out.id = null;
+  }
+  return out;
+}
+
+function generateTicketCode() {
+  return String(Math.floor(10000 + Math.random() * 90000));
+}
 
 /**
- * Create new speaker (existing)
+ * POST /api/speakers
+ * Create new speaker
  */
-router.post('/', registerSpeaker);
+router.post('/', async (req, res) => {
+  try {
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
+    const payload = { ...(req.body || {}) };
+
+    // normalize slots if provided as JSON string
+    if (typeof payload.slots === 'string') {
+      try { payload.slots = JSON.parse(payload.slots); } catch { /* keep as string */ }
+    }
+    // ensure consistent fields
+    const doc = {
+      name: payload.name || payload.fullName || '',
+      email: payload.email || '',
+      mobile: payload.mobile || payload.phone || '',
+      designation: payload.designation || '',
+      company: payload.company || '',
+      ticket_category: payload.ticket_category || payload.ticketCategory || '',
+      slots: Array.isArray(payload.slots) ? payload.slots : [],
+      category: payload.category || '',
+      txId: payload.txId || payload.txid || null,
+      other_details: payload.other_details || payload.otherDetails || '',
+      created_at: new Date(),
+      registered_at: payload.registered_at ? new Date(payload.registered_at) : new Date(),
+    };
+
+    // ticket_code: allow incoming, else generate
+    doc.ticket_code = payload.ticket_code || payload.ticketCode || generateTicketCode();
+
+    const col = db.collection('speakers');
+    const r = await col.insertOne(doc);
+    const insertedId = r.insertedId ? String(r.insertedId) : null;
+
+    // return the saved row (with id)
+    const saved = await col.findOne({ _id: r.insertedId });
+    return res.json({ success: true, insertedId, ticket_code: doc.ticket_code, saved: docToOutput(saved) });
+  } catch (err) {
+    console.error('POST /api/speakers (mongo) error:', err && (err.stack || err));
+    return res.status(500).json({ success: false, error: 'Failed to create speaker' });
+  }
+});
 
 /**
+ * GET /api/speakers
  * Get all speakers
  */
 router.get('/', async (req, res) => {
   try {
-    const rows = await db.query('SELECT * FROM speakers');
-    res.json(rows);
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ error: 'database not available' });
+
+    const col = db.collection('speakers');
+    const cursor = col.find({}).sort({ created_at: -1 }).limit(1000);
+    const rows = await cursor.toArray();
+    return res.json(rows.map(docToOutput));
   } catch (err) {
-    console.error('GET /api/speakers error:', err);
-    res.status(500).json({ error: 'Failed to fetch speakers' });
+    console.error('GET /api/speakers (mongo) error:', err && (err.stack || err));
+    return res.status(500).json({ error: 'Failed to fetch speakers' });
   }
 });
 
 /**
- * Get speaker by id
+ * GET /api/speakers/:id
  */
 router.get('/:id', async (req, res) => {
   try {
-    const rows = await db.query('SELECT * FROM speakers WHERE id = ?', [req.params.id]);
-    res.json(Array.isArray(rows) && rows.length ? rows[0] : {});
+    const id = req.params.id;
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ error: 'database not available' });
+
+    let q;
+    try {
+      q = { _id: new ObjectId(id) };
+    } catch {
+      return res.status(400).json({ error: 'invalid id' });
+    }
+
+    const col = db.collection('speakers');
+    const doc = await col.findOne(q);
+    return res.json(docToOutput(doc) || {});
   } catch (err) {
-    console.error('GET /api/speakers/:id error:', err);
-    res.status(500).json({ error: 'Failed to fetch speaker' });
+    console.error('GET /api/speakers/:id (mongo) error:', err && (err.stack || err));
+    return res.status(500).json({ error: 'Failed to fetch speaker' });
   }
 });
 
 /**
- * Confirm endpoint (defensive):
  * POST /api/speakers/:id/confirm
- * - Body may contain: ticket_code, ticket_category, txId, ...
- * - By default does NOT overwrite ticket_code if the DB already has one.
- * - To force overwrite pass { ticket_code, force: true } (use sparingly).
+ * Defensive confirm endpoint - does not overwrite ticket_code unless force=true
  */
-router.post('/:id/confirm', express.json(), async (req, res) => {
+router.post('/:id/confirm', async (req, res) => {
   try {
-    const speakerId = req.params.id;
-    if (!speakerId) return res.status(400).json({ success: false, error: 'Missing speaker id in URL' });
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ success: false, error: 'Missing speaker id' });
 
-    console.log(`[speakers/:id/confirm] id=${speakerId} payload:`, req.body);
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
 
-    const payload = { ...req.body };
+    let oid;
+    try { oid = new ObjectId(id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
+
+    const col = db.collection('speakers');
+    const existing = await col.findOne({ _id: oid });
+    if (!existing) return res.status(404).json({ success: false, error: 'Speaker not found' });
+
+    const payload = { ...(req.body || {}) };
     const force = !!payload.force;
     delete payload.force;
 
-    // Load existing row
-    const rows = await db.query('SELECT * FROM speakers WHERE id = ?', [speakerId]);
-    const existing = Array.isArray(rows) && rows.length ? rows[0] : null;
-    if (!existing) return res.status(404).json({ success: false, error: 'Speaker not found' });
-
-    // Determine allowed columns
-    const colsRaw = await db.query("SHOW COLUMNS FROM speakers");
-    const cols = Array.isArray(colsRaw[0]) ? colsRaw[0] : colsRaw;
-    const allowedColumns = cols.map(c => c.Field);
-
-    // Whitelist fields to update
-    const whitelist = new Set(['ticket_code', 'ticket_category', 'txId', 'email', 'name', 'company', 'mobile', 'designation', 'slots']);
+    // whitelist of fields allowed to update
+    const whitelist = new Set(['ticket_code', 'ticket_category', 'txId', 'email', 'name', 'company', 'mobile', 'designation', 'slots', 'other_details']);
 
     const updateData = {};
     for (const k of Object.keys(payload || {})) {
       if (!whitelist.has(k)) continue;
-      if (!allowedColumns.includes(k)) continue;
       updateData[k] = payload[k];
     }
 
-    // Defensive: ticket_code handling
+    // defensive ticket_code handling
     if ('ticket_code' in updateData) {
-      const incomingCode = updateData.ticket_code ? String(updateData.ticket_code).trim() : "";
-      const existingCode = existing.ticket_code ? String(existing.ticket_code).trim() : "";
-      if (!incomingCode) {
-        // remove empty ticket_code from updates
+      const incoming = updateData.ticket_code ? String(updateData.ticket_code).trim() : '';
+      const existingCode = existing.ticket_code ? String(existing.ticket_code).trim() : '';
+      if (!incoming) {
         delete updateData.ticket_code;
-      } else if (existingCode && !force && incomingCode !== existingCode) {
-        // do not overwrite canonical server-generated code unless force=true
-        console.log(`[speakers/:id/confirm] NOT overwriting existing ticket_code (${existingCode}) with incoming (${incomingCode}) - use force:true to override`);
+      } else if (existingCode && !force && incoming !== existingCode) {
+        // keep existing unless force true
         delete updateData.ticket_code;
       }
-      // if no existing code or force=true, we allow updateData.ticket_code
     }
 
     if (Object.keys(updateData).length === 0) {
-      // Nothing to update - return current row so client can get canonical code
-      return res.json({ success: true, updated: existing, note: "No changes applied (ticket_code protected)" });
+      return res.json({ success: true, updated: docToOutput(existing), note: 'No changes applied (ticket_code protected)' });
     }
 
-    const assignments = Object.keys(updateData).map(k => `${k} = ?`).join(', ');
-    const params = [...Object.values(updateData), speakerId];
+    // normalize slots
+    if (updateData.slots && typeof updateData.slots === 'string') {
+      try { updateData.slots = JSON.parse(updateData.slots); } catch { /* leave as-is */ }
+    }
 
-    await db.query(`UPDATE speakers SET ${assignments} WHERE id = ?`, params);
+    updateData.updated_at = new Date();
 
-    const after = await db.query('SELECT * FROM speakers WHERE id = ?', [speakerId]);
-    const updated = Array.isArray(after) && after.length ? after[0] : null;
+    await col.updateOne({ _id: oid }, { $set: updateData });
 
-    console.log(`[speakers/:id/confirm] updated row for id=${speakerId}:`, updated);
-    return res.json({ success: true, updated });
+    const after = await col.findOne({ _id: oid });
+    return res.json({ success: true, updated: docToOutput(after) });
   } catch (err) {
-    console.error('POST /api/speakers/:id/confirm error:', err && (err.stack || err));
+    console.error('POST /api/speakers/:id/confirm (mongo) error:', err && (err.stack || err));
     return res.status(500).json({ success: false, error: 'Failed to update speaker' });
   }
 });
 
 /**
- * General update (existing)
+ * PUT /api/speakers/:id
+ * General update
  */
 router.put('/:id', async (req, res) => {
-  function toMariaDbDatetime(val) {
-    if (!val) return null;
-    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(val)) return val;
-    try {
-      const d = new Date(val);
-      if (isNaN(d.getTime())) return null;
-      return d.toISOString().replace('T',' ').substring(0,19);
-    } catch {
-      return null;
-    }
-  }
   try {
-    const data = { ...req.body };
-    delete data.id;
-    delete data.title;
+    const id = req.params.id;
+    let oid;
+    try { oid = new ObjectId(id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
 
-    const columnsResultRaw = await db.query("SHOW COLUMNS FROM speakers");
-    const columnsResult = Array.isArray(columnsResultRaw[0]) ? columnsResultRaw[0] : columnsResultRaw;
-    const allowedColumns = columnsResult.map(col => col.Field);
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
+    const payload = { ...(req.body || {}) };
+    delete payload.id;
+    delete payload.title;
+
+    // Allowed fields - mirror DB columns you had previously
+    const allowed = new Set(['name','email','mobile','designation','company','company_type','other_details','purpose','ticket_category','ticket_label','ticket_price','ticket_gst','ticket_total','slots','category','txId','ticket_code','registered_at','created_at']);
 
     const updateData = {};
-    for (const key of Object.keys(data)) {
-      if (allowedColumns.includes(key)) updateData[key] = data[key];
+    for (const k of Object.keys(payload)) {
+      if (!allowed.has(k)) continue;
+      updateData[k] = payload[k];
     }
 
-    if (updateData.registered_at) updateData.registered_at = toMariaDbDatetime(updateData.registered_at);
-    if (updateData.created_at) updateData.created_at = toMariaDbDatetime(updateData.created_at);
-
-    if (Object.keys(updateData).length === 0) {
-      return res.status(400).json({ success: false, error: "No valid fields to update." });
+    if ('registered_at' in updateData) {
+      const v = toIsoMysqlLike(updateData.registered_at);
+      if (v) updateData.registered_at = new Date(v.replace(' ', 'T'));
+      else delete updateData.registered_at;
+    }
+    if ('created_at' in updateData) {
+      const v = toIsoMysqlLike(updateData.created_at);
+      if (v) updateData.created_at = new Date(v.replace(' ', 'T'));
+      else delete updateData.created_at;
     }
 
-    const assignments = Object.keys(updateData).map(col => `${col}=?`).join(",");
-    await db.query(`UPDATE speakers SET ${assignments} WHERE id=?`, [...Object.values(updateData), req.params.id]);
-    res.json({ success: true });
+    if (Object.keys(updateData).length === 0) return res.status(400).json({ success: false, error: 'No valid fields to update.' });
+
+    updateData.updated_at = new Date();
+
+    // normalize slots if string
+    if (updateData.slots && typeof updateData.slots === 'string') {
+      try { updateData.slots = JSON.parse(updateData.slots); } catch { /* ignore */ }
+    }
+
+    const col = db.collection('speakers');
+    await col.updateOne({ _id: oid }, { $set: updateData });
+
+    return res.json({ success: true });
   } catch (err) {
-    console.error('Update speaker error:', err);
-    res.status(500).json({ success: false, error: 'Failed to update speaker', details: err.message });
+    console.error('PUT /api/speakers/:id (mongo) error:', err && (err.stack || err));
+    return res.status(500).json({ success: false, error: 'Failed to update speaker', details: err && err.message });
   }
 });
 
 /**
- * Delete speaker
+ * DELETE /api/speakers/:id
  */
 router.delete('/:id', async (req, res) => {
   try {
-    await db.query('DELETE FROM speakers WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    const id = req.params.id;
+    let oid;
+    try { oid = new ObjectId(id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
+
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
+    const col = db.collection('speakers');
+    await col.deleteOne({ _id: oid });
+    return res.json({ success: true });
   } catch (err) {
-    console.error('DELETE /api/speakers/:id error:', err);
-    res.status(500).json({ success: false, error: 'Failed to delete speaker' });
+    console.error('DELETE /api/speakers/:id (mongo) error:', err && (err.stack || err));
+    return res.status(500).json({ success: false, error: 'Failed to delete speaker' });
   }
 });
 

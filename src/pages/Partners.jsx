@@ -25,7 +25,7 @@ function getApiBaseFromEnvOrWindow() {
   if (typeof window !== "undefined" && window.__API_BASE__) return String(window.__API_BASE__).replace(/\/$/, "");
   if (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) return String(window.__CONFIG__.backendUrl).replace(/\/$/, "");
   if (typeof window !== "undefined" && window.location && window.location.origin) return window.location.origin.replace(/\/$/, "");
-  return "http://localhost:5000";
+  return "/api";
 }
 function apiUrl(path) {
   const base = getApiBaseFromEnvOrWindow();

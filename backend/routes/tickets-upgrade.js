@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { sendMail } = require("../utils/mailer");
 
-const API_BASE = (process.env.API_BASE || process.env.BACKEND_URL || "http://localhost:5000").replace(/\/$/, "");
+const API_BASE = (process.env.API_BASE || process.env.BACKEND_URL || "/api").replace(/\/$/, "");
 const FRONTEND_BASE = (process.env.FRONTEND_BASE || process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
 
 /**
