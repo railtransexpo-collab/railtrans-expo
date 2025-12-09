@@ -5,20 +5,41 @@ function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
 function getApiBaseFromEnvOrWindow() {
   if (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) return process.env.REACT_APP_API_BASE.replace(/\/$/, "");
+  if (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE_URL) return process.env.REACT_APP_API_BASE_URL.replace(/\/$/, "");
   if (typeof window !== "undefined" && window.__API_BASE__) return String(window.__API_BASE__).replace(/\/$/, "");
   if (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) return String(window.__CONFIG__.backendUrl).replace(/\/$/, "");
   if (typeof window !== "undefined" && window.location && window.location.origin) return window.location.origin.replace(/\/$/, "");
-  return "http://localhost:5000";
+  return "/api";
 }
 const API_BASE = getApiBaseFromEnvOrWindow();
 
+/* Build API url safely:
+ - If endpoint is absolute, return as-is
+ - Otherwise ensure we join API_BASE + endpoint without duplicating "/api"
+*/
+function buildApiUrl(endpoint = "") {
+  if (!endpoint) endpoint = "";
+  if (/^https?:\/\//i.test(endpoint)) return endpoint;
+  const ep = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  if (!API_BASE) return ep;
+  // Avoid double "/api" if API_BASE ends with /api and endpoint starts with /api
+  if (API_BASE.endsWith("/api") && ep.startsWith("/api")) {
+    return API_BASE.replace(/\/$/, "") + ep.replace(/^\/api/, "");
+  }
+  return API_BASE.replace(/\/$/, "") + ep;
+}
+
 async function uploadFileToServer(file, endpoint = "/api/upload-asset") {
-  const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint}`;
+  if (!file) throw new Error("No file provided");
+  // client-side guard to match server limits
+  const MAX_SIZE = 300 * 1024 * 1024; // 300MB
+  if (file.size && file.size > MAX_SIZE) throw new Error(`File too large (${Math.round(file.size/1024/1024)}MB). Max ${MAX_SIZE/1024/1024}MB.`);
+  const url = buildApiUrl(endpoint);
   const formData = new FormData();
   formData.append("file", file);
   const res = await fetch(url, {
     method: "POST",
-    headers: { "ngrok-skip-browser-warning": "69420" },
+    headers: { "Accept": "application/json", "ngrok-skip-browser-warning": "69420" },
     body: formData
   });
   if (!res.ok) {
@@ -81,6 +102,17 @@ function normalizeConfig(cfg = {}) {
   return config;
 }
 
+/* defaults so UI shows fields even when DB config is empty */
+const DEFAULT_PARTNER_FIELDS = [
+  { name: "company", label: "Company / Organisation", type: "text", required: true, visible: true },
+  { name: "name", label: "Contact person", type: "text", required: true, visible: true },
+  { name: "mobile", label: "Mobile No.", type: "text", required: true, visible: true, meta: { useOtp: false } },
+  { name: "email", label: "Email", type: "email", required: false, visible: true },
+  { name: "designation", label: "Designation", type: "text", required: false, visible: true },
+  { name: "businessType", label: "Business Type", type: "text", required: false, visible: true },
+  { name: "partnership", label: "Partnership Interested In", type: "text", required: false, visible: true },
+];
+
 export default function PartnersAdmin() {
   const [config, setConfig] = useState(null);
   const [form, setForm] = useState({});
@@ -93,11 +125,27 @@ export default function PartnersAdmin() {
     let mounted = true;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/partner-config`, { cache: "no-store", headers: { "Accept": "application/json", "ngrok-skip-browser-warning": "69420" } });
-        if (!res.ok) throw new Error(`Failed to fetch config (${res.status})`);
-        const cfg = await res.json();
+        // Ensure we request the backend path that exists on the server
+        const res = await fetch(buildApiUrl("/api/partner-config"), { cache: "no-store", headers: { "Accept": "application/json", "ngrok-skip-browser-warning": "69420" } });
+        if (!res.ok) {
+          const txt = await res.text().catch(()=> "");
+          throw new Error(`Failed to fetch config (${res.status}) ${txt}`);
+        }
+        const cfg = await res.json().catch(()=> ({}));
         if (!mounted) return;
-        setConfig(normalizeConfig(cfg));
+        const normalized = normalizeConfig(cfg);
+
+        // merge defaults: add any default fields not already present
+        try {
+          const existing = new Set((normalized.fields || []).map(f => (f && f.name) ? f.name : ""));
+          DEFAULT_PARTNER_FIELDS.forEach(def => {
+            if (!existing.has(def.name)) normalized.fields.push(clone(def));
+          });
+        } catch (e) {
+          // ignore merge errors
+        }
+
+        setConfig(normalized);
       } catch (e) {
         console.error("PartnersAdmin load config error:", e && (e.stack || e));
         setError("Error loading config from backend. See server logs.");
@@ -189,13 +237,13 @@ export default function PartnersAdmin() {
     setError(null);
     try {
       const toSave = stripAcceptTermsFields(config);
-      const res = await fetch(`${API_BASE}/api/partner-config/config`, {
+      const res = await fetch(buildApiUrl("/api/partner-config/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
         body: JSON.stringify(toSave)
       });
       if (!res.ok) {
-        const txt = await res.text().catch(()=>"");
+        const txt = await res.text().catch(()=> "");
         throw new Error(txt || `HTTP ${res.status}`);
       }
       const json = await res.json().catch(()=>null);
@@ -232,6 +280,7 @@ export default function PartnersAdmin() {
             : <img src={config.backgroundMedia.url} alt="Background" style={{ maxWidth: 400 }} />
         ) : <span className="text-sm text-gray-500">No background media set</span>}
       </div>
+
       <div className="flex gap-3 items-center mb-3">
         <input type="file" accept="image/*" onChange={(e) => handleAssetUpload(e, "backgroundMedia", null, "image")} disabled={uploading} />
         <input type="file" accept="video/*" onChange={(e) => handleAssetUpload(e, "backgroundMedia", null, "video")} disabled={uploading} />
@@ -295,38 +344,6 @@ export default function PartnersAdmin() {
         <button onClick={addField} className="px-4 py-2 bg-blue-100">Add Field</button>
         <button onClick={addCheckboxField} className="px-4 py-2 bg-yellow-100">Add Checkbox Field</button>
       </div>
-
-      {/* Terms */}
-      <h3 className="font-bold mb-2 mt-8">Terms &amp; Conditions (appears at end of form)</h3>
-      <div className="mb-2">
-        <label className="block mb-1">Label shown to users</label>
-        <input type="text" value={config.termsLabel || "Terms & Conditions"} onChange={(e) => setConfig(clone({ ...config, termsLabel: e.target.value }))} className="border px-2 w-full mb-2" />
-
-        <label className="block mb-1">Link to Terms (paste URL) — file upload will set this</label>
-        <input type="text" placeholder="https://..." value={config.termsUrl || ""} onChange={(e) => setConfig(clone({ ...config, termsUrl: e.target.value }))} className="border px-2 w-full mb-2" />
-
-        <div className="flex items-center gap-3 mb-2">
-          <input type="file" accept=".pdf,.txt,.doc,.docx" onChange={(e) => handleAssetUpload(e, "termsUrl")} disabled={uploading} />
-          <button type="button" onClick={removeTermsFile} className="px-3 py-1 border">Remove Terms File</button>
-          <label className="ml-2"><input type="checkbox" checked={!!config.termsRequired} onChange={(e) => setConfig(clone({ ...config, termsRequired: e.target.checked }))} /><span className="ml-2">Require acceptance on registration</span></label>
-        </div>
-
-        <label className="block mb-1 mt-3">Terms Text (editable - optional):</label>
-        <textarea value={config.termsText || ""} onChange={(e) => updateTermsText(e.target.value)} rows={8} className="border px-2 w-full mb-2" placeholder="Paste or write full terms / T&C text here (optional)"></textarea>
-
-        <div className="mb-2">
-          <strong>Preview:</strong>
-          {config.termsUrl ? (<div className="mt-1"><a href={config.termsUrl} target="_blank" rel="noreferrer" className="text-indigo-700 underline">{config.termsUrl}</a></div>) : null}
-          {config.termsText ? (<div className="mt-2 p-3 border rounded bg-gray-50" style={{ whiteSpace: "pre-wrap" }}>{config.termsText}</div>) : null}
-        </div>
-      </div>
-
-      {/* Event Details */}
-      <h3 className="font-bold mb-2 mt-8">Event Details</h3>
-      <input value={config.eventDetails?.name || ""} onChange={e => updateEventDetail("name", e.target.value)} placeholder="Event Name" className="border px-2 mb-2 block" />
-      <input value={config.eventDetails?.date || ""} onChange={e => updateEventDetail("date", e.target.value)} placeholder="Date" className="border px-2 mb-2 block" />
-      <input value={config.eventDetails?.venue || ""} onChange={e => updateEventDetail("venue", e.target.value)} placeholder="Venue/Address" className="border px-2 mb-2 block" />
-      <input value={config.eventDetails?.tagline || ""} onChange={e => updateEventDetail("tagline", e.target.value)} placeholder="Tagline" className="border px-2 mb-2 block" />
 
       <div className="mt-6">
         <button onClick={saveConfig} className="px-6 py-3 bg-blue-600 text-white font-bold rounded" disabled={uploading}>Save Changes</button>

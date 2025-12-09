@@ -1,202 +1,233 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
-const { registerVisitor } = require('../controllers/visitorsController');
-const { appendStep } = require('../controllers/fileLogger');
+const mongo = require('../utils/mongoClient'); // should export getDb() or .db
+const { ObjectId } = require('mongodb');
 
-// Ensure JSON parsing for this router
-router.use(express.json({ limit: '3mb' }));
+router.use(express.json({ limit: '5mb' }));
 
 /**
- * Normalize DB result into an array of row objects regardless of driver shape.
+ * obtainDb()
+ * Accept both mongo.getDb() (async) and mongo.db sync shapes.
  */
-function normalizeRows(rows) {
-  if (!rows && rows !== 0) return [];
-  if (Array.isArray(rows)) {
-    // some drivers return [rows, fields]
-    if (rows.length >= 1 && Array.isArray(rows[0]) && typeof rows[0][0] === 'object') return rows[0];
-    // MySQL sometimes returns array of rows
-    return rows;
+async function obtainDb() {
+  if (!mongo) return null;
+  if (typeof mongo.getDb === 'function') {
+    const db = await mongo.getDb();
+    return db;
   }
-  if (typeof rows === 'object') {
-    const keys = Object.keys(rows);
-    const numericKeys = keys.filter(k => /^\d+$/.test(k));
-    if (numericKeys.length > 0 && numericKeys.length === keys.length) {
-      return numericKeys
-        .map(k => Number(k))
-        .sort((a, b) => a - b)
-        .map(n => rows[String(n)]);
-    }
-    const allAreArrays = keys.length > 0 && keys.every(k => Array.isArray(rows[k]));
-    if (allAreArrays) {
-      const lengths = keys.map(k => rows[k].length);
-      const unique = Array.from(new Set(lengths));
-      if (unique.length === 1) {
-        const len = unique[0];
-        const out = [];
-        for (let i = 0; i < len; i++) {
-          const r = {};
-          for (const k of keys) r[k] = rows[k][i];
-          out.push(r);
-        }
-        return out;
-      }
-    }
-    const vals = Object.values(rows);
-    if (Array.isArray(vals) && vals.length && typeof vals[0] === 'object') return vals;
-  }
-  return [];
+  if (mongo.db) return mongo.db;
+  return null;
 }
 
-// POST registration (existing controller handles insert and returns insertedId + ticket_code)
-router.post('/', registerVisitor);
+function pick(v, keys) {
+  for (const k of keys) if (v && Object.prototype.hasOwnProperty.call(v, k)) return v[k];
+  return undefined;
+}
 
-// POST /step - accept arbitrary step snapshots and save to logs
-router.post('/step', async (req, res) => {
+/**
+ * POST /api/visitors
+ * Save a visitor into registrants collection (role: 'visitor')
+ */
+router.post('/', async (req, res) => {
   try {
-    const { step, data, meta } = req.body || {};
-    if (!step) return res.status(400).json({ success: false, error: 'Missing step' });
-    const ok = await appendStep(step, data || {}, meta || {});
-    if (!ok) return res.status(500).json({ success: false, error: 'Failed to save step file' });
-    return res.json({ success: true });
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, message: 'database not available' });
+
+    const coll = db.collection('registrants');
+
+    const body = req.body || {};
+    // normalize common top-level values; front-end may send either raw form or wrapped
+    const form = body._rawForm || body.form || body || {};
+
+    const name = ((body.name || form.name || ((form.firstName && form.lastName) ? `${form.firstName} ${form.lastName}` : '') ) || '').trim();
+    const email = ((body.email || form.email || form.emailAddress) || '').trim();
+    const mobile = ((body.mobile || form.mobile || form.phone) || '').trim();
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return res.status(400).json({ success: false, message: 'Valid email is required.' });
+    }
+
+    // use provided ticket_code if any; otherwise null (you may generate server-side if desired)
+    const ticket_code = body.ticket_code || form.ticket_code || null;
+
+    const doc = {
+      role: 'visitor',
+      data: form, // keep full raw form here
+      name,
+      email,
+      mobile,
+      ticket_code,
+      ticket_category: body.ticket_category || form.ticket_category || null,
+      ticket_price: Number(body.ticket_price || form.ticket_price || 0) || 0,
+      ticket_gst: Number(body.ticket_gst || form.ticket_gst || 0) || 0,
+      ticket_total: Number(body.ticket_total || form.ticket_total || 0) || 0,
+      txId: body.txId || form.txId || null,
+      payment_proof_url: body.payment_proof_url || form.payment_proof_url || null,
+      status: 'new',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const r = await coll.insertOne(doc);
+    const insertedId = r && r.insertedId ? String(r.insertedId) : null;
+
+    // Return the ticket_code that will be associated (if any); keep compatibility with old API
+    return res.json({ success: true, message: 'Visitor registered successfully.', insertedId, ticket_code: ticket_code || null });
   } catch (err) {
-    console.error('[visitors] /step error:', err);
-    return res.status(500).json({ success: false, error: 'Server error', details: String(err && err.message ? err.message : err) });
+    console.error('[visitors] POST error', err && (err.stack || err));
+    return res.status(500).json({ success: false, message: 'Database error', details: String(err && err.message ? err.message : err) });
   }
 });
 
-// GET all visitors
+/**
+ * POST /api/visitors/step
+ * Fire-and-forget step logger (keep behavior)
+ */
+router.post('/step', async (req, res) => {
+  try {
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+    const col = db.collection('steps');
+    const payload = { ...req.body, createdAt: new Date() };
+    // best-effort insert
+    try { await col.insertOne(payload); } catch (e) { console.warn('[visitors] step insert failed', e && e.message); }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[visitors] /step error', err && (err.stack || err));
+    return res.status(500).json({ success: false, error: 'Failed to save step' });
+  }
+});
+
+/**
+ * GET /api/visitors
+ * Query params: q (search), limit, skip
+ */
 router.get('/', async (req, res) => {
   try {
-    const raw = await db.query('SELECT * FROM visitors ORDER BY id DESC LIMIT 200');
-    const rows = normalizeRows(raw);
-    console.debug('[API] GET /api/visitors -> rows.length =', rows.length);
-    return res.json(rows);
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ error: 'database not available' });
+
+    const coll = db.collection('registrants');
+    const q = (req.query.q || '').trim();
+    const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit || '200', 10)));
+    const skip = Math.max(0, parseInt(req.query.skip || '0', 10));
+
+    const filter = { role: 'visitor' };
+    if (q) {
+      // simple case-insensitive search on email, name, ticket_code and also on nested data
+      filter.$or = [
+        { email: { $regex: q, $options: 'i' } },
+        { name: { $regex: q, $options: 'i' } },
+        { ticket_code: { $regex: q, $options: 'i' } },
+        { 'data.email': { $regex: q, $options: 'i' } },
+        { 'data.name': { $regex: q, $options: 'i' } },
+      ];
+    }
+
+    const cursor = coll.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit);
+    const rows = await cursor.toArray();
+    const out = rows.map(r => {
+      const copy = { ...r };
+      if (copy._id) { copy.id = String(copy._id); delete copy._id; }
+      return copy;
+    });
+    return res.json(out);
   } catch (err) {
-    console.error('[visitors] GET error:', err);
+    console.error('[visitors] GET error', err && (err.stack || err));
     return res.status(500).json({ error: 'Failed to fetch visitors' });
   }
 });
 
-// GET single visitor by id — improved diagnostics and 404 when not found
+/**
+ * GET /api/visitors/:id
+ */
 router.get('/:id', async (req, res) => {
-  const id = req.params.id;
   try {
-    console.debug(`[visitors] GET /:id called with id=${id}`);
-    const raw = await db.query('SELECT * FROM visitors WHERE id = ?', [id]);
-    console.debug('[visitors] raw db result for id=', id, Array.isArray(raw) ? `array len ${raw.length}` : typeof raw);
-    const rows = normalizeRows(raw);
-    console.debug('[visitors] normalized rows for id=', id, 'len=', rows.length);
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ error: 'Visitor not found', id });
-    }
-    return res.json(rows[0]);
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ error: 'database not available' });
+
+    const coll = db.collection('registrants');
+    const id = req.params.id;
+    const q = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+    q.role = 'visitor';
+    const doc = await coll.findOne(q);
+    if (!doc) return res.status(404).json({ error: 'Visitor not found' });
+    const copy = { ...doc };
+    if (copy._id) { copy.id = String(copy._id); delete copy._id; }
+    return res.json(copy);
   } catch (err) {
-    console.error('[visitors] GET/:id error:', err);
-    return res.status(500).json({ error: 'Failed to fetch visitor', details: String(err && err.message ? err.message : err) });
+    console.error('[visitors] GET/:id error', err && (err.stack || err));
+    return res.status(500).json({ error: 'Failed to fetch visitor' });
   }
 });
 
 /**
  * DELETE /api/visitors/:id
- * - Deletes the visitor row by id.
- * - Returns 200 + { success:true, id } when deleted, 404 if not found.
  */
 router.delete('/:id', async (req, res) => {
-  const id = req.params.id;
   try {
-    if (!id) return res.status(400).json({ success: false, error: 'Missing id' });
-    // Execute delete
-    const raw = await db.query('DELETE FROM visitors WHERE id = ?', [id]);
-    // normalize driver shape
-    const result = Array.isArray(raw) && raw.length > 0 ? raw[0] : raw;
-    // Try to get affected rows in various shapes
-    const affected = result && (result.affectedRows || result.affected_rows || result.affected) ? (result.affectedRows || result.affected_rows || result.affected) : null;
-    // Some drivers return an object with warningCount or a number — fall back to checking result.affectedRows === undefined
-    if (typeof affected === 'number') {
-      if (affected === 0) return res.status(404).json({ success: false, error: 'Visitor not found', id });
-      return res.json({ success: true, id });
-    }
-    // If we can't read affectedRows reliably, attempt a SELECT to confirm deletion
-    const verify = await db.query('SELECT id FROM visitors WHERE id = ?', [id]);
-    const verifyRows = normalizeRows(verify);
-    if (verifyRows && verifyRows.length > 0) {
-      // row still exists -> treat as failure
-      return res.status(500).json({ success: false, error: 'Delete did not remove row (unknown driver shape)', id, driverResult: result });
-    }
-    // assume success
-    return res.json({ success: true, id });
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
+    const coll = db.collection('registrants');
+    const id = req.params.id;
+    const q = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+    q.role = 'visitor';
+    const r = await coll.deleteOne(q);
+    if (!r.deletedCount) return res.status(404).json({ success: false, error: 'Visitor not found' });
+    return res.json({ success: true });
   } catch (err) {
-    console.error('[visitors] DELETE/:id error:', err);
-    return res.status(500).json({ success: false, error: 'Failed to delete visitor', details: String(err && err.message ? err.message : err) });
+    console.error('[visitors] DELETE error', err && (err.stack || err));
+    return res.status(500).json({ success: false, error: 'Failed to delete visitor' });
   }
 });
 
 /**
  * POST /api/visitors/:id/confirm
- * (keeps your existing robust confirm implementation)
+ * Update allowed fields; do NOT overwrite ticket_code unless force=true
  */
 router.post('/:id/confirm', async (req, res) => {
   try {
-    const visitorId = req.params.id;
-    if (!visitorId) return res.status(400).json({ success: false, error: 'Missing visitor id in URL' });
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
 
-    console.log(`[visitors/:id/confirm] id=${visitorId} payload:`, req.body);
-
-    const payload = { ...req.body };
+    const coll = db.collection('registrants');
+    const id = req.params.id;
+    const payload = { ...(req.body || {}) };
     const force = !!payload.force;
     delete payload.force;
 
-    // Load existing row
-    const rowsRaw = await db.query('SELECT * FROM visitors WHERE id = ?', [visitorId]);
-    const rows = normalizeRows(rowsRaw);
-    const existing = rows && rows.length ? rows[0] : null;
-    if (!existing) return res.status(404).json({ success: false, error: 'Visitor not found' });
+    const q = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+    q.role = 'visitor';
+    const doc = await coll.findOne(q);
+    if (!doc) return res.status(404).json({ success: false, error: 'Visitor not found' });
 
-    // Get table columns
-    const colsRaw = await db.query("SHOW COLUMNS FROM visitors");
-    const cols = Array.isArray(colsRaw[0]) ? colsRaw[0] : colsRaw;
-    const allowedColumns = Array.isArray(cols) ? cols.map(c => c.Field) : [];
-
-    // Whitelist of allowed update fields
-    const whitelist = new Set(['ticket_code', 'ticket_category', 'txId', 'email', 'name', 'company', 'mobile', 'designation', 'slots']);
-
-    const updateData = {};
+    const whitelist = new Set(['ticket_code','ticket_category','txId','email','name','company','mobile','designation','slots']);
+    const update = {};
     for (const k of Object.keys(payload || {})) {
       if (!whitelist.has(k)) continue;
-      if (!allowedColumns.includes(k)) continue;
-      updateData[k] = payload[k];
+      update[k] = payload[k];
     }
 
-    // Defensive ticket_code handling
-    if ('ticket_code' in updateData) {
-      const incomingCode = updateData.ticket_code ? String(updateData.ticket_code).trim() : "";
-      const existingCode = existing.ticket_code ? String(existing.ticket_code).trim() : "";
-      if (!incomingCode) {
-        delete updateData.ticket_code;
-      } else if (existingCode && !force && incomingCode !== existingCode) {
-        console.log(`[visitors/:id/confirm] NOT overwriting existing ticket_code (${existingCode}) with incoming (${incomingCode}) - use force:true to override`);
-        delete updateData.ticket_code;
-      }
+    if ('ticket_code' in update) {
+      const incoming = update.ticket_code ? String(update.ticket_code).trim() : "";
+      const existingCode = doc.ticket_code ? String(doc.ticket_code).trim() : "";
+      if (!incoming) delete update.ticket_code;
+      else if (existingCode && !force && incoming !== existingCode) delete update.ticket_code;
     }
 
-    if (Object.keys(updateData).length === 0) {
-      return res.json({ success: true, updated: existing, note: "No changes applied (ticket_code protected if present)" });
+    if (Object.keys(update).length === 0) {
+      const copy = { ...doc }; if (copy._id) { copy.id = String(copy._id); delete copy._id; }
+      return res.json({ success: true, updated: copy, note: "No changes applied (ticket_code protected)" });
     }
 
-    const assignments = Object.keys(updateData).map(k => `\`${k}\` = ?`).join(', ');
-    const params = [...Object.values(updateData), visitorId];
-
-    await db.query(`UPDATE visitors SET ${assignments} WHERE id = ?`, params);
-
-    const afterRaw = await db.query('SELECT * FROM visitors WHERE id = ?', [visitorId]);
-    const afterRows = normalizeRows(afterRaw);
-    const updated = afterRows && afterRows.length ? afterRows[0] : null;
-
-    console.log(`[visitors/:id/confirm] updated row for id=${visitorId}:`, updated);
-    return res.json({ success: true, updated });
+    update.updatedAt = new Date();
+    await coll.updateOne({ _id: doc._id }, { $set: update });
+    const after = await coll.findOne({ _id: doc._id });
+    const copyAfter = { ...after }; if (copyAfter._id) { copyAfter.id = String(copyAfter._id); delete copyAfter._id; }
+    return res.json({ success: true, updated: copyAfter });
   } catch (err) {
-    console.error('[visitors] POST /:id/confirm error:', err && (err.stack || err));
+    console.error('[visitors] POST confirm error', err && (err.stack || err));
     return res.status(500).json({ success: false, error: 'Failed to update visitor' });
   }
 });

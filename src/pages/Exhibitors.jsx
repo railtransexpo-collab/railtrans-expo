@@ -9,11 +9,11 @@ import { buildTicketEmail } from "../utils/emailTemplate";
 
 /*
   Exhibitors.jsx
-  - Fixes: use the same reminders endpoint as Visitors (POST /api/reminders/send)
-  - Sends templated email using buildTicketEmail and attaches generated PDF if available.
-  - Passes the registration form into buildTicketEmail so event details are read from the registration.
+  - Fixed field fetching: robustly reads server response (handles { config } wrapper),
+    normalizes fields and merges sensible defaults when DB config is missing fields.
+  - Keeps existing behavior otherwise.
 */
-
+function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 function getApiBaseFromEnvOrWindow() {
   if (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) {
     return process.env.REACT_APP_API_BASE.replace(/\/$/, "");
@@ -27,7 +27,7 @@ function getApiBaseFromEnvOrWindow() {
   if (typeof window !== "undefined" && window.location && window.location.origin) {
     return window.location.origin.replace(/\/$/, "");
   }
-  return "http://localhost:5000";
+  return "/api";
 }
 function apiUrl(path) {
   const base = getApiBaseFromEnvOrWindow();
@@ -169,16 +169,12 @@ async function fetchLogoUrlFromServer() {
   }
 }
 
-/* Build & send templated email using buildTicketEmail
-   KEY FIX: pass registration form into buildTicketEmail so template reads event details from registration form (like Visitors).
-   REMINDERS: use /api/reminders/send to schedule reminders (same as Visitors).
-*/
+/* Build & send templated email using buildTicketEmail (unchanged) */
 async function sendTemplatedAckEmail(exhibitor, insertedId, eventDetails = {}, images = [], pdfBlob = null, config = {}) {
   const to = exhibitor.email || (exhibitor._rawForm && (exhibitor._rawForm.email || exhibitor._rawForm.contactEmail)) || "";
   if (!to) return { ok: false, error: "no-recipient" };
 
   const frontendBase = (typeof window !== "undefined" && (window.__FRONTEND_BASE__ || window.location.origin)) || "";
-  // Resolve logo URL: server -> config -> localStorage
   let logoUrl = "";
   try {
     const serverLogo = await fetchLogoUrlFromServer();
@@ -198,7 +194,6 @@ async function sendTemplatedAckEmail(exhibitor, insertedId, eventDetails = {}, i
   }
   logoUrl = logoUrl || "";
 
-  // Pass the registration form into the template so event details come from registration
   const emailModel = {
     frontendBase,
     entity: "exhibitors",
@@ -209,7 +204,7 @@ async function sendTemplatedAckEmail(exhibitor, insertedId, eventDetails = {}, i
     badgePreviewUrl: "",
     downloadUrl: "",
     logoUrl,
-    form: exhibitor._rawForm || exhibitor || {}, // crucial: pass registration form
+    form: exhibitor._rawForm || exhibitor || {},
     pdfBase64: null,
   };
 
@@ -224,7 +219,7 @@ async function sendTemplatedAckEmail(exhibitor, insertedId, eventDetails = {}, i
   return await sendMailPayload(mailPayload);
 }
 
-/* API helpers */
+/* API helpers (unchanged) */
 async function saveExhibitorApi(payload) {
   const res = await fetch(apiUrl("/api/exhibitors"), {
     method: "POST",
@@ -241,7 +236,7 @@ async function saveExhibitorApi(payload) {
   return json;
 }
 
-/* REMINDER: use same endpoint as Visitors: POST /api/reminders/send */
+/* REMINDER helper */
 async function scheduleReminder(entityId, eventDate) {
   try {
     if (!entityId || !eventDate) return;
@@ -272,6 +267,18 @@ async function saveStep(stepName, data = {}, meta = {}) {
   }
 }
 
+/* ---------- DEFAULTS for Exhibitors fields ---------- */
+const DEFAULT_EXHIBITOR_FIELDS = [
+  { name: "name", label: "Name", type: "text", required: true, visible: true },
+  { name: "email", label: "Email", type: "email", required: true, visible: true },
+  { name: "mobile", label: "Mobile No.", type: "text", required: true, visible: true, meta: { useOtp: true } },
+  { name: "designation", label: "Designation", type: "text", required: false, visible: true },
+  { name: "company", label: "Company / Organization", type: "text", required: false, visible: true },
+  { name: "stall_size", label: "Stall / Booth Size", type: "select", options: ["3x3", "3x6", "6x6", "Custom"], required: false, visible: true },
+  { name: "product_category", label: "Product / Service Category", type: "text", required: false, visible: true },
+];
+/* ---------- end defaults ---------- */
+
 /* ---------- Component ---------- */
 export default function Exhibitors() {
   const [config, setConfig] = useState(null);
@@ -295,9 +302,24 @@ export default function Exhibitors() {
     try {
       const url = apiUrl("/api/exhibitor-config?cb=" + Date.now());
       const r = await fetch(url, { cache: "no-store", headers: { Accept: "application/json", "ngrok-skip-browser-warning": "69420" } });
-      const cfg = r.ok ? await r.json() : {};
+      const raw = r.ok ? await r.json().catch(() => ({})) : {};
+      // support both shapes: { config: {...} } or {...} directly
+      const cfg = raw && raw.config ? raw.config : raw;
+
       const normalized = { ...(cfg || {}) };
 
+      // Ensure fields array exists
+      normalized.fields = Array.isArray(normalized.fields) ? normalized.fields : [];
+
+      // Merge defaults if fields missing
+      try {
+        const existing = new Set(normalized.fields.map(f => (f && f.name) ? f.name : ""));
+        DEFAULT_EXHIBITOR_FIELDS.forEach(def => {
+          if (!existing.has(def.name)) normalized.fields.push(clone(def));
+        });
+      } catch (e) { /* ignore */ }
+
+      // normalize images/background/terms
       if (normalized.backgroundMedia && normalized.backgroundMedia.url) {
         normalized.backgroundMedia = { type: normalized.backgroundMedia.type || "image", url: normalizeAdminUrl(normalized.backgroundMedia.url) };
       } else {
@@ -312,9 +334,9 @@ export default function Exhibitors() {
 
       if (normalized.termsUrl) normalized.termsUrl = normalizeAdminUrl(normalized.termsUrl);
       normalized.images = Array.isArray(normalized.images) ? normalized.images.map(normalizeAdminUrl) : [];
-      normalized.fields = Array.isArray(normalized.fields) ? normalized.fields : [];
       normalized.eventDetails = typeof normalized.eventDetails === "object" && normalized.eventDetails ? normalized.eventDetails : {};
 
+      // ensure email fields are OTP-enabled by default if not explicitly disabled
       normalized.fields = normalized.fields.map((f) => {
         if (!f || !f.name) return f;
         const nameLabel = (f.name + " " + (f.label || "")).toLowerCase();
@@ -330,7 +352,7 @@ export default function Exhibitors() {
       setConfig(normalized);
     } catch (e) {
       console.error("[Exhibitors] fetchConfig error:", e);
-      setConfig({ fields: [], images: [], backgroundMedia: { type: "image", url: "" }, eventDetails: {} });
+      setConfig({ fields: DEFAULT_EXHIBITOR_FIELDS.slice(), images: [], backgroundMedia: { type: "image", url: "" }, eventDetails: {} });
       setError("Failed to load configuration.");
     } finally {
       setLoading(false);
@@ -342,6 +364,7 @@ export default function Exhibitors() {
     const onCfg = () => fetchConfig();
     window.addEventListener("exhibitor-config-updated", onCfg);
     return () => window.removeEventListener("exhibitor-config-updated", onCfg);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleFormSubmit(formData) {
@@ -457,9 +480,7 @@ export default function Exhibitors() {
       const json = await saveExhibitorApi(payload);
       if (json?.insertedId) {
         setSavedId(json.insertedId);
-        // Schedule reminder using same endpoint as Visitors
         scheduleReminder(json.insertedId, config?.eventDetails?.date).catch(() => {});
-        // Generate PDF
         let pdf = null;
         try {
           if (typeof generateVisitorBadgePDF === "function") {
@@ -467,7 +488,6 @@ export default function Exhibitors() {
           }
         } catch (e) { console.warn("PDF gen failed", e); pdf = null; }
 
-        // Send templated email in background; pass registration form so event details come from registration
         (async () => {
           try {
             await sendTemplatedAckEmail(payload, json.insertedId, config?.eventDetails || {}, config?.images || [], pdf, config);

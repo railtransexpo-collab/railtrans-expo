@@ -93,6 +93,8 @@ export default function DashboardContent() {
   const [actionMsg, setActionMsg] = useState("");
   const [showExhibitorManager, setShowExhibitorManager] = useState(false);
   const [showPartnerManager, setShowPartnerManager] = useState(false);
+  const [pendingPremium, setPendingPremium] = useState(null); // {table, id, email, premium}
+  const [newIsPremium, setNewIsPremium] = useState(false); // flag set when clicking Add New
 
   const mountedRef = useRef(true);
   const apiMap = useRef(apiEndpoints.reduce((a, e) => { a[e.label.toLowerCase()] = e.url; a[e.label.toLowerCase() + "_config"] = e.configUrl; return a; }, {}));
@@ -152,7 +154,138 @@ export default function DashboardContent() {
     });
   }, [report]);
 
-  // --- Handlers (fully implemented) ---
+  // --- send templated email using buildTicketEmail; supports premium flag to suppress upgrade button
+  const sendTemplatedEmail = useCallback(async ({ entity, id, row, premium = false }) => {
+    try {
+      const email = (row && (row.email || row.email_address || row.contact || row.contactEmail)) || "";
+      if (!email) {
+        console.warn("[sendTemplatedEmail] no recipient email for", entity, id);
+        return { ok: false, reason: "no-email" };
+      }
+      if (typeof buildTicketEmail !== "function") {
+        console.warn("[sendTemplatedEmail] no buildTicketEmail");
+        return { ok: false, reason: "no-builder" };
+      }
+      const frontendBase = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "";
+      const bannerUrl = (configs && configs[entity] && Array.isArray(configs[entity].images) && configs[entity].images.length) ? configs[entity].images[0] : "";
+      const model = {
+        frontendBase,
+        entity,
+        id,
+        name: row?.name || row?.company || "",
+        company: row?.company || row?.organization || "",
+        ticket_category: row?.ticket_category || (premium ? "Premium" : ""),
+        badgePreviewUrl: row?.badgePreviewUrl || row?.badge_preview || "",
+        downloadUrl: row?.downloadUrl || row?.download_url || "",
+        upgradeUrl: premium ? "" : (row?.upgradeUrl || row?.upgrade_url || ""),
+        logoUrl: bannerUrl,
+        form: row || null,
+        pdfBase64: row?.pdfBase64 || null,
+      };
+
+      // build template
+      const tpl = await buildTicketEmail(model) || {};
+      let { subject, text, html, attachments } = tpl;
+      attachments = attachments || [];
+
+      // fallback to minimal content if template returned nothing
+      if ((!subject || !String(subject).trim()) && (!text && !html)) {
+        subject = subject || `RailTrans Expo — Your E‑Badge`;
+        text = text || `Hello ${model.name || "Participant"},\n\nYour ticket code: ${model.ticket_category || ""}\n\nDownload: ${model.downloadUrl || frontendBase}`;
+        html = html || `<p>Hello ${model.name || "Participant"},</p><p>Your ticket info has been generated.</p><p><a href="${model.downloadUrl || frontendBase}">Download E‑Badge</a></p>`;
+      }
+
+      const mailPayload = { to: email, subject, text, html, attachments, logoUrl: bannerUrl };
+      console.debug("[sendTemplatedEmail] mailPayload preview:", { to: mailPayload.to, subject: mailPayload.subject, attachments: (mailPayload.attachments || []).length, logoUrl: mailPayload.logoUrl });
+
+      const r = await fetch("/api/mailer", { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(mailPayload) });
+      const body = await parseErrorBody(r);
+      if (!r.ok) {
+        console.warn("[sendTemplatedEmail] mailer responded non-ok:", body);
+        return { ok: false, reason: "mailer-failed", body };
+      }
+      const resJson = await r.json().catch(() => null);
+      console.debug("[sendTemplatedEmail] mailer success", resJson);
+      return { ok: true, info: resJson };
+    } catch (e) { console.warn("[sendTemplatedEmail] exception", e); return { ok: false, reason: "exception", error: String(e) }; }
+  }, [configs, parseErrorBody]);
+
+  // --- generate ticket (server endpoints optional). If not available, create client ticket_code and PATCH entity.
+  const generateAndEmailTicket = useCallback(async ({ tableKey, row, premium = false }) => {
+    setActionMsg(`Generating ticket for ${row?.name || row?.company || row?.id || ""}...`);
+    try {
+      const base = apiMap.current[tableKey];
+      if (!base) { setActionMsg("Unknown table"); return { ok: false }; }
+
+      // canonical id extraction
+      const id = row.id || row._id || row.ID || row.Id || (row && row._id && (row._id.$oid || row._id.toString())) || "";
+      if (!id) { setActionMsg("Missing id"); return { ok: false }; }
+
+      // If a ticket_code already exists, skip generate step
+      let ticket_code = row && (row.ticket_code || row.ticketCode || row.code) || "";
+
+      // try server generate endpoints
+      if (!ticket_code) {
+        const candidates = [
+          `${base}/${encodeURIComponent(String(id))}/generate-ticket`,
+          `${base}/${encodeURIComponent(String(id))}/generate`,
+          `${base}/generate-ticket/${encodeURIComponent(String(id))}`,
+          `${base}/generate/${encodeURIComponent(String(id))}`,
+          `${base}/${encodeURIComponent(String(id))}/ticket`,
+        ];
+        for (const url of candidates) {
+          try {
+            const r = await fetch(url, { method: "POST" });
+            if (!r.ok) continue;
+            const js = await r.json().catch(() => null);
+            const maybe = js && (js.ticket_code || js.code || js.ticketCode || (js.data && (js.data.ticket_code || js.data.code)));
+            if (maybe) { ticket_code = maybe; break; }
+          } catch (e) { /* ignore and continue */ }
+        }
+      }
+
+      // fallback: create local ticket_code and PATCH the entity
+      if (!ticket_code) {
+        ticket_code = String(Math.floor(100000 + Math.random() * 900000));
+        try {
+          await fetch(`${base}/${encodeURIComponent(String(id))}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+            body: JSON.stringify({ ticket_code }),
+          }).catch(()=>null);
+        } catch(e){}
+      }
+
+      // fetch latest row
+      let workingRow = row;
+      try {
+        const r2 = await fetch(`${base}/${encodeURIComponent(String(id))}`);
+        if (r2.ok) {
+          const j2 = await r2.json().catch(() => null);
+          workingRow = sanitizeRow(j2 || {});
+        }
+      } catch(e){}
+
+      // send email; pass premium flag so template hides upgrade button
+      const mailResult = await sendTemplatedEmail({ entity: tableKey, id: String(id), row: workingRow, premium });
+      if (mailResult && mailResult.ok) {
+        setActionMsg("Ticket generated and emailed");
+        // clear pendingPremium if matches
+        if (pendingPremium && pendingPremium.table === tableKey && String(pendingPremium.id) === String(id)) setPendingPremium(null);
+        return { ok: true };
+      } else {
+        setActionMsg("Ticket generated but email failed");
+        console.warn("mailResult:", mailResult);
+        return { ok: false, mailResult };
+      }
+    } catch (e) {
+      console.error("generateAndEmailTicket error", e);
+      setActionMsg("Generation failed");
+      return { ok: false, error: String(e) };
+    }
+  }, [sendTemplatedEmail, pendingPremium]);
+
+  // --- Handlers (create, update, delete, refresh) ---
   const handleEdit = useCallback((table, row) => {
     const key = table.toLowerCase();
     const cfg = configs[key];
@@ -164,16 +297,22 @@ export default function DashboardContent() {
       const cols = rows.length ? getColumnsFromRows(rows) : Object.keys(row || {});
       meta = cols.filter(c => !HIDDEN_FIELDS.has(c)).map(c => ({ name: c, label: c.replace(/_/g, " "), type: "text" }));
     }
+    // Ensure email field present in modal
+    if (!meta.some(m => m.name === "email" || m.name === "email_address")) {
+      meta.push({ name: "email", label: "Email", type: "text" });
+    }
     setModalColumns(meta);
     const prepared = {};
     meta.forEach(f => prepared[f.name] = row && f.name in row ? row[f.name] : "");
+    setNewIsPremium(false); // editing existing => not a new premium creation
     setEditTable(key);
     setEditRow(prepared);
     setIsCreating(false);
     setEditOpen(true);
   }, [configs, report]);
 
-  const handleAddNew = useCallback((table) => {
+  // default Add New creates premium tickets per your request (pass premium=true)
+  const handleAddNew = useCallback((table, premium = true) => {
     const key = table.toLowerCase();
     const defaults = {
       visitors: [{ name: "name", label: "Name" }, { name: "email", label: "Email" }],
@@ -182,13 +321,18 @@ export default function DashboardContent() {
       speakers: [{ name: "name", label: "Name" }, { name: "email", label: "Email" }],
       awardees: [{ name: "name", label: "Name" }, { name: "email", label: "Email" }],
     };
-    const meta = (configs[key] && Array.isArray(configs[key].fields) ? configs[key].fields.map(f => ({ name: f.name, label: f.label || f.name })) : (defaults[key] || [{ name: "name", label: "Name" }])).filter(m => m.name && !HIDDEN_FIELDS.has(m.name));
+    let meta = (configs[key] && Array.isArray(configs[key].fields) ? configs[key].fields.map(f => ({ name: f.name, label: f.label || f.name })) : (defaults[key] || [{ name: "name", label: "Name" }])).filter(m => m.name && !HIDDEN_FIELDS.has(m.name));
+    // Ensure email exists
+    if (!meta.some(m => m.name === "email" || m.name === "email_address")) {
+      meta.push({ name: "email", label: "Email", type: "text" });
+    }
     setModalColumns(meta);
     const empty = {};
     meta.forEach(m => empty[m.name] = "");
     setEditTable(key);
     setEditRow(empty);
     setIsCreating(true);
+    setNewIsPremium(!!premium);
     setEditOpen(true);
   }, [configs]);
 
@@ -245,26 +389,90 @@ export default function DashboardContent() {
     } catch (e) { console.error(e); setActionMsg("Refresh failed"); }
   }, [parseErrorBody]);
 
+  // CREATE/UPDATE flow with robust id detection and email sending
   const handleEditSave = useCallback(async (edited) => {
     setActionMsg("");
     setEditOpen(false);
     try {
       const base = apiMap.current[editTable];
       if (!base) { setActionMsg("Unknown table"); return; }
+
       if (isCreating) {
         const res = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(edited) });
-        if (!res.ok) { const body = await parseErrorBody(res); setActionMsg(`Create failed: ${JSON.stringify(body)}`); return; }
+        const createdRaw = await res.json().catch(() => null);
+        if (!res.ok) {
+          const body = createdRaw || await parseErrorBody(res);
+          setActionMsg(`Create failed: ${JSON.stringify(body)}`);
+          return;
+        }
         setActionMsg("Created");
+        // robust id extraction and row extraction
+        let newId = createdRaw && (createdRaw.insertedId || createdRaw.insertId || createdRaw.id || createdRaw._id || (createdRaw.data && (createdRaw.data.id || createdRaw.data._id)) || null);
+        let createdRow = null;
+        // if API returned created row directly
+        if (createdRaw && (createdRaw.id || createdRaw._id || createdRaw.email || createdRaw.name)) {
+          createdRow = sanitizeRow(createdRaw);
+          if (!newId) newId = createdRow.id || createdRow._id || null;
+        }
+        // if we have id, fetch the fresh row to ensure canonical shape
+        if (!createdRow && newId) {
+          try {
+            const r = await fetch(`${base}/${encodeURIComponent(String(newId))}`);
+            if (r.ok) {
+              const j = await r.json().catch(() => null);
+              createdRow = sanitizeRow(j || {});
+            }
+          } catch (e) { console.warn("post-create fetch failed", e); }
+        }
+        // fallback: refresh all if we couldn't fetch createdRow
+        if (!createdRow) {
+          await fetchAll();
+          setActionMsg("Created");
+        } else {
+          // insert newRow into report
+          setReport(prev => ({ ...prev, [editTable]: [createdRow, ...(prev[editTable] || [])] }));
+          // set pending premium for quick generate UI; include premium flag from newIsPremium
+          setPendingPremium({ table: editTable, id: String(newId || createdRow.id || createdRow._id || ""), email: createdRow.email || createdRow.email_address || createdRow.contact || "", premium: !!newIsPremium });
+          // if email present, attempt to send templated email immediately with premium info
+          const email = createdRow.email || createdRow.email_address || createdRow.contact || "";
+          if (email) {
+            setActionMsg("Created — sending email...");
+            const mailResult = await sendTemplatedEmail({ entity: editTable, id: String(newId || createdRow.id || createdRow._id || ""), row: createdRow, premium: !!newIsPremium });
+            if (mailResult && mailResult.ok) setActionMsg("Created and emailed");
+            else setActionMsg((mailResult && mailResult.reason) ? `Created but email failed (${mailResult.reason})` : "Created but email failed");
+          }
+        }
+        setNewIsPremium(false);
       } else {
+        // update path
         let id = edited.id || edited._id;
         if (!id && edited._id && typeof edited._id === "object") id = edited._id.$oid || edited._id.toString() || "";
         if (!id) { setActionMsg("Missing id for update"); return; }
         const res = await fetch(`${base}/${encodeURIComponent(String(id))}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edited) });
-        if (!res.ok) { const body = await parseErrorBody(res); setActionMsg(`Update failed: ${JSON.stringify(body)}`); return; }
-        setActionMsg("Updated");
+        if (!res.ok) {
+          const body = await parseErrorBody(res);
+          setActionMsg(`Update failed: ${JSON.stringify(body)}`);
+          return;
+        }
+        // fetch updated row and replace
+        try {
+          const r = await fetch(`${base}/${encodeURIComponent(String(id))}`);
+          if (r.ok) {
+            const j = await r.json().catch(() => null);
+            const updated = sanitizeRow(j || {});
+            setReport(prev => ({ ...prev, [editTable]: (prev[editTable] || []).map((x) => String(x.id) === String(id) ? updated : x) }));
+            setActionMsg("Updated");
+          } else {
+            await fetchAll();
+            setActionMsg("Updated (refreshed)");
+          }
+        } catch (e) {
+          console.warn("post-update fetch failed", e);
+          await fetchAll();
+        }
       }
     } catch (e) { console.error(e); setActionMsg("Save failed"); } finally { setIsCreating(false); fetchAll(); }
-  }, [editTable, isCreating, fetchAll, parseErrorBody]);
+  }, [editTable, isCreating, fetchAll, parseErrorBody, sendTemplatedEmail, newIsPremium]);
 
   const stats = useMemo(() => ({
     visitors: (report.visitors || []).length,
@@ -275,10 +483,8 @@ export default function DashboardContent() {
   }), [report]);
 
   return (
-    // Keep full-width content (do NOT apply an extra md:ml-64 here — AdminLayout already offsets)
     <div className="pt-4 pb-6 w-full">
       <div className="w-full mx-auto px-4 md:px-6">
-        {/* Sticky header positioned below the fixed Topbar (top-16). z-20 ensures the header is above card content */}
         <div className="sticky top-16 z-20 bg-transparent pb-4">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div>
@@ -297,7 +503,6 @@ export default function DashboardContent() {
             </div>
           </div>
 
-          {/* stats row */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
             <div className="bg-white rounded-lg p-3 shadow">
               <div className="text-xs text-gray-500">Visitors</div>
@@ -322,7 +527,6 @@ export default function DashboardContent() {
           </div>
         </div>
 
-        {/* Main grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-4">
           {TABLE_KEYS.map((key) => {
             const label = key.charAt(0).toUpperCase() + key.slice(1);
@@ -342,7 +546,7 @@ export default function DashboardContent() {
                     <div className="text-xs text-gray-500">{rows.length} total</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button className="px-2 py-1 text-sm border rounded" onClick={() => handleAddNew(label)}>Add New</button>
+                    <button className="px-2 py-1 text-sm border rounded" onClick={() => handleAddNew(label, true)}>Add New</button>
                     {showManage && <button className="px-2 py-1 text-sm bg-indigo-600 text-white rounded" onClick={() => { if (key === "exhibitors") setShowExhibitorManager(true); else setShowPartnerManager(true); }}>Manage</button>}
                   </div>
                 </div>
@@ -361,20 +565,28 @@ export default function DashboardContent() {
                             </tr>
                           </thead>
                           <tbody>
-                            {shown.map((r, idx) => (
-                              <tr key={r.id ?? `${key}-${idx}`} className="border-t">
-                                {cols.slice(0, 5).map(c => <td key={c} className="px-3 py-3 text-sm text-gray-700 align-top whitespace-pre-wrap break-words">{r[c] ?? ""}</td>)}
-                                <td className="px-3 py-3">
-                                  <div className="flex items-center gap-2">
-                                    <ActionsMenu
-                                      onEdit={() => handleEdit(label, r)}
-                                      onRefresh={() => handleRefreshRow(key, r)}
-                                      onDelete={() => handleDelete(label, r)}
-                                    />
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
+                            {shown.map((r, idx) => {
+                              const canonicalId = r.id || r._id || r.ID || "";
+                              const isPendingPremium = pendingPremium && pendingPremium.table === key && String(pendingPremium.id) === String(canonicalId);
+                              const premiumFlag = isPendingPremium || String((r.ticket_category || "").toLowerCase()).includes("premium");
+                              return (
+                                <tr key={r.id ?? `${key}-${idx}`} className="border-t">
+                                  {cols.slice(0, 5).map(c => <td key={c} className="px-3 py-3 text-sm text-gray-700 align-top whitespace-pre-wrap break-words">{r[c] ?? ""}</td>)}
+                                  <td className="px-3 py-3">
+                                    <div className="flex items-center gap-2">
+                                      <button className="px-2 py-1 border rounded text-sm" onClick={() => generateAndEmailTicket({ tableKey: key, row: r, premium: premiumFlag })}>
+                                        {premiumFlag ? "Generate (Premium)" : "Generate"}
+                                      </button>
+                                      <ActionsMenu
+                                        onEdit={() => handleEdit(label, r)}
+                                        onRefresh={() => handleRefreshRow(key, r)}
+                                        onDelete={() => handleDelete(label, r)}
+                                      />
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -390,7 +602,6 @@ export default function DashboardContent() {
           })}
         </div>
 
-        {/* Modals & managers */}
         <EditModal open={editOpen} onClose={() => setEditOpen(false)} row={editRow} columns={modalColumns} onSave={handleEditSave} isNew={isCreating} table={editTable || "exhibitors"} />
         {deleteOpen && <DeleteModal open={deleteOpen} onClose={() => setDeleteOpen(false)} onConfirm={handleDeleteConfirm} title="Delete record" message={`Delete "${deleteRow?.name || deleteRow?.id}"?`} confirmLabel="Delete" cancelLabel="Cancel" />}
 

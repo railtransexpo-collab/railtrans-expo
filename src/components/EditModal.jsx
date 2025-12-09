@@ -63,6 +63,20 @@ function expandCompanyAliases(payload = {}) {
   return p;
 }
 
+/* Utility: dedupe meta fields by normalized name (keeps first occurrence) */
+function dedupeMeta(meta = []) {
+  const seen = new Set();
+  const out = [];
+  for (const m of meta) {
+    const name = String(m.name || "").trim();
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
+}
+
 export default function EditModal({
   open,
   onClose,
@@ -74,11 +88,11 @@ export default function EditModal({
 }) {
   const metaBase = normalize(columns);
 
-  // ------ FIX: Ensure Exhibitors always have a Company Name field ------
+  // ------ Ensure Exhibitors always have a Company Name field (but dedupe) ------
   let meta = [...metaBase];
   if (table === "exhibitors") {
     const hasCompany = meta.some((f) =>
-      ["companyName", "company", "company_name"].includes(f.name)
+      ["companyName", "company", "company_name"].includes((f.name || "").toString())
     );
     if (!hasCompany) {
       meta.unshift({
@@ -89,6 +103,9 @@ export default function EditModal({
       });
     }
   }
+
+  // Deduplicate meta by normalized name to avoid duplicate fields
+  meta = dedupeMeta(meta);
   // ----------------------------------------------------------------------
 
   const refs = useRef({});

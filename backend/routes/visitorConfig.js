@@ -1,185 +1,121 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const db = require("../db");
+const mongo = require('../utils/mongoClient');
 
 /**
- * Normalize / canonicalize config shape used by frontends.
- * Ensures fields have name/label/options and backgroundMedia/terms keys are consistent.
+ * Helper: obtain a connected MongoDB Db instance.
+ * Accepts both sync (mongo.db) and async (mongo.getDb()) client shapes.
+ */
+async function obtainDb() {
+  if (!mongo) throw new Error('mongoClient is not available');
+  if (typeof mongo.getDb === 'function') {
+    // getDb may be async
+    const db = await mongo.getDb();
+    if (!db) throw new Error('mongoClient.getDb() did not return a db instance');
+    return db;
+  }
+  if (mongo.db) return mongo.db;
+  throw new Error('mongoClient has no getDb() or db property');
+}
+
+/**
+ * Canonicalize admin config payload into a stable shape used by UI and storage.
  */
 function canonicalizeConfig(cfg = {}) {
-  const config = { ...(typeof cfg === "object" && cfg !== null ? cfg : {}) };
+  const config = { ...(typeof cfg === 'object' && cfg !== null ? cfg : {}) };
 
   config.fields = Array.isArray(config.fields)
-    ? config.fields.map(f => {
-        const ff = typeof f === "object" && f ? { ...f } : {};
-        ff.name = (ff.name || "").trim();
-        ff.label = (ff.label || "").trim();
-        ff.type = (ff.type || "text").trim();
-        if (["select", "radio"].includes(ff.type)) {
-          ff.options = Array.isArray(ff.options) ? ff.options.map(o => (o == null ? "" : String(o))) : [""];
-        } else {
-          ff.options = Array.isArray(ff.options) ? ff.options : [];
-        }
-        // keep meta as-is if present (but ensure object)
-        if (ff.meta && typeof ff.meta !== "object") {
-          try { ff.meta = JSON.parse(String(ff.meta)); } catch { ff.meta = undefined; }
-        }
-        return ff;
-      }).filter(f => f.name && f.label)
+    ? config.fields
+        .map((f) => {
+          const ff = typeof f === 'object' && f !== null ? { ...f } : {};
+          ff.name = String(ff.name || '').trim();
+          ff.label = String(ff.label || ff.name || '').trim();
+          ff.type = String(ff.type || 'text').trim();
+          ff.options = Array.isArray(ff.options) ? ff.options.map((o) => (o === null || o === undefined ? '' : String(o))) : [];
+          ff.visible = typeof ff.visible === 'boolean' ? ff.visible : true;
+          ff.required = !!ff.required;
+          return ff;
+        })
+        .filter((f) => f && f.name) // only keep fields that have a name
     : [];
 
-  config.images = Array.isArray(config.images) ? config.images : [];
-  config.eventDetails = typeof config.eventDetails === "object" && config.eventDetails !== null ? config.eventDetails : {};
-
-  // background media normalization (accept many legacy keys)
-  let bg = config.backgroundMedia || config.background_media || config.backgroundVideo || config.background_video || config.backgroundImage || config.background_image || "";
-  if (typeof bg === "object" && bg !== null) {
-    config.backgroundMedia = { type: (bg.type || "image"), url: (bg.url || "") };
-  } else if (typeof bg === "string" && bg.trim()) {
-    const url = bg.trim();
-    const isVideo = /\.(mp4|webm|ogg)(\?|$)/i.test(url) || /video/i.test(url);
-    config.backgroundMedia = { type: isVideo ? "video" : "image", url };
+  // images: accept a single url or an array
+  if (Array.isArray(config.images)) {
+    config.images = config.images.map((i) => (i === null || i === undefined ? '' : String(i)));
+  } else if (config.images) {
+    config.images = [String(config.images)];
   } else {
-    config.backgroundMedia = { type: "image", url: "" };
+    config.images = [];
   }
 
-  config.termsUrl = config.termsUrl || config.terms_url || config.terms || "";
-  config.termsLabel = config.termsLabel || config.terms_label || "Terms & Conditions";
-  config.termsRequired = !!config.termsRequired || !!config.terms_required;
-  config.backgroundColor = config.backgroundColor || config.background_color || "#ffffff";
-  config.badgeTemplateUrl = config.badgeTemplateUrl || config.badge_template_url || config.badgeTemplate || "";
-  config.banner = config.banner || config.headerBanner || "";
-  config.hostedByLogo = config.hostedByLogo || config.hosted_by_logo || "";
+  config.eventDetails = typeof config.eventDetails === 'object' && config.eventDetails !== null ? config.eventDetails : {};
+
+  // backgroundMedia handling: prefer standardized object { type, url }
+  if (config.backgroundMedia && typeof config.backgroundMedia === 'object' && config.backgroundMedia.url) {
+    config.backgroundMedia = { type: config.backgroundMedia.type || 'image', url: String(config.backgroundMedia.url) };
+  } else if (config.backgroundVideo && config.backgroundVideo) {
+    config.backgroundMedia = { type: 'video', url: String(config.backgroundVideo) };
+  } else if (config.backgroundImage && config.backgroundImage) {
+    config.backgroundMedia = { type: 'image', url: String(config.backgroundImage) };
+  } else {
+    config.backgroundMedia = { type: 'image', url: '' };
+  }
+
+  config.termsUrl = config.termsUrl || config.terms || config.terms_url || '';
+  config.termsLabel = config.termsLabel || config.terms_label || 'Terms & Conditions';
+  config.termsRequired = !!config.termsRequired;
+
+  config.backgroundColor = config.backgroundColor || config.background_color || '#ffffff';
+  config.badgeTemplateUrl = config.badgeTemplateUrl || config.badge_template_url || '';
 
   return config;
 }
 
 /**
  * GET /api/visitor-config
- * Returns canonicalized config (safe shape) so frontends don't receive defaults accidentally.
+ * Returns canonicalized visitor registration page config from Mongo.
  */
-router.get("/", async (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    console.log("HIT")
-    const dbResult = await db.execute(
-      "SELECT config_json FROM registration_page_config_visitor WHERE page = ? LIMIT 1",
-      ["visitor"]
-    );
-
-    // db.execute may return [rows, fields] or rows directly
-    let rows = Array.isArray(dbResult) ? dbResult[0] : dbResult;
-
-    let configJson;
-    if (Array.isArray(rows)) {
-      if (!rows.length || !rows[0].config_json) return res.json({ fields: [], images: [], eventDetails: {} });
-      configJson = rows[0].config_json;
-    } else if (rows && rows.config_json) {
-      configJson = rows.config_json;
-    } else {
+    const db = await obtainDb();
+    const configs = db.collection('registration_configs');
+    const doc = await configs.findOne({ page: 'visitor' });
+    if (!doc || !doc.config) {
       return res.json({ fields: [], images: [], eventDetails: {} });
     }
-
-    let config;
-    if (typeof configJson === "object" && configJson !== null) {
-      config = configJson;
-    } else {
-      try {
-        config = JSON.parse(String(configJson || ""));
-      } catch (e) {
-        console.warn("Failed to parse config_json, returning defaults.", e && e.message ? e.message : e);
-        return res.json({ fields: [], images: [], eventDetails: {} });
-      }
-    }
-
-    const out = canonicalizeConfig(config);
-    console.log("Visitor config served:", out);
-    return res.json(out);
+    const canonical = canonicalizeConfig(doc.config || {});
+    return res.json(canonical);
   } catch (err) {
-    console.error("General error in visitor config route:", err && err.stack ? err.stack : err);
-    return res.json({ fields: [], images: [], eventDetails: {} });
-  }
-});
-
-/**
- * GET /api/visitor-config/raw
- * Debug endpoint - returns the raw DB value saved in config_json column (string or object)
- */
-router.get("/raw", async (req, res) => {
-  try {
-    const dbResult = await db.execute(
-      "SELECT config_json FROM registration_page_config_visitor WHERE page = ? LIMIT 1",
-      ["visitor"]
-    );
-    let rows = Array.isArray(dbResult) ? dbResult[0] : dbResult;
-    if (Array.isArray(rows)) {
-      if (!rows.length) return res.json({ raw: null });
-      return res.json({ raw: rows[0].config_json });
-    } else if (rows && rows.config_json) {
-      return res.json({ raw: rows.config_json });
-    } else {
-      return res.json({ raw: null });
-    }
-  } catch (err) {
-    console.error("Error reading raw config:", err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: "Failed to read raw config" });
+    console.error('[visitor-config-mongo] GET error', err && (err.stack || err));
+    return res.status(500).json({ fields: [], images: [], eventDetails: {} });
   }
 });
 
 /**
  * POST /api/visitor-config/config
- * - Accepts config from admin, canonicalizes it, upserts into DB, and returns saved canonicalized config.
+ * Upsert canonicalized config into registration_configs collection.
+ * Uses express.json() to ensure body is parsed.
  */
-router.post("/config", async (req, res) => {
+router.post('/config', express.json(), async (req, res) => {
   try {
-    const incoming = req.body;
-    const canonical = canonicalizeConfig(incoming || {});
-    const json = JSON.stringify(canonical);
-
-    // Try UPDATE first (common case where row exists)
-    const updResult = await db.execute(
-      "UPDATE registration_page_config_visitor SET config_json = ? WHERE page = ?",
-      [json, "visitor"]
+    const incoming = req.body || {};
+    const canonical = canonicalizeConfig(incoming);
+    const db = await obtainDb();
+    const configs = db.collection('registration_configs');
+    const now = new Date();
+    await configs.updateOne(
+      { page: 'visitor' },
+      { $set: { config: canonical, updatedAt: now }, $setOnInsert: { createdAt: now } },
+      { upsert: true }
     );
-    // normalize result
-    const upd = Array.isArray(updResult) ? updResult[0] : updResult;
-    const affected = (upd && typeof upd.affectedRows === "number") ? upd.affectedRows : null;
 
-    if (!affected || affected === 0) {
-      // try insert or insert-or-update
-      try {
-        await db.execute(
-          "INSERT INTO registration_page_config_visitor (`page`, `config_json`) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_json = VALUES(config_json)",
-          ["visitor", json]
-        );
-      } catch (e) {
-        // fallback: try simple insert (in case ON DUPLICATE KEY not supported)
-        try {
-          await db.execute("INSERT IGNORE INTO registration_page_config_visitor (`page`, `config_json`) VALUES (?, ?)", ["visitor", json]);
-        } catch (ie) {
-          console.error("Insert fallback failed:", ie && ie.stack ? ie.stack : ie);
-          return res.status(500).json({ error: "Failed to save config" });
-        }
-      }
-    }
+    // NOTE: If you want to automatically add/remove fields from registrants collection
+    // (e.g. create indexes or remove stored keys), do it here by calling your sync helper.
 
-    // Return canonicalized config that was saved
     return res.json({ success: true, config: canonical });
   } catch (err) {
-    console.error("Config update error:", err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: "Database update failed" });
-  }
-});
-
-router.delete("/", async (req, res) => {
-  try {
-    await db.execute(
-      "DELETE FROM registration_page_config_visitor WHERE page = ?",
-      ["visitor"]
-    );
-    return res.json({ success: true, message: "Visitor config deleted." });
-  } catch (err) {
-    console.error("Config delete error:", err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: "Database delete failed" });
+    console.error('[visitor-config-mongo] POST error', err && (err.stack || err));
+    return res.status(500).json({ success: false, error: 'Database update failed' });
   }
 });
 

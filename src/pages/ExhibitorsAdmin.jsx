@@ -1,39 +1,54 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import DynamicRegistrationForm from "./DynamicRegistrationForm";
 
 function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-// Use REACT_APP_API_BASE, or window.__API_BASE__, or default to backend on port 5000
-const API_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || "http://localhost:5000").replace(/\/$/, "");
+// Use REACT_APP_API_BASE, or window.__API_BASE__, or default to host-relative "/api"
+const BACKEND_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || "").replace(/\/$/, "");
 
 /**
- * Upload helper: sends 'file' field to the backend upload endpoint.
- * Uses absolute URL to ensure requests go to backend (not dev server).
- * Adds the ngrok skip header as requested.
+ * Build a correct URL for API endpoints:
+ * - If endpoint is absolute (http/https) return unchanged
+ * - Otherwise join API_BASE and endpoint without doubling slashes
  */
-async function uploadFileToServer(file, endpoint = "/api/upload-asset") {
-  const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint}`;
+function buildApiUrl(endpoint = "") {
+  if (!endpoint) endpoint = "";
+  if (/^https?:\/\//i.test(endpoint)) return endpoint;
+  let e = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  if (!e.startsWith("/api")) e = `/api${e}`;
+  if (BACKEND_BASE && /^https?:\/\//i.test(BACKEND_BASE)) {
+    return BACKEND_BASE.replace(/\/$/, "") + e;
+  }
+  return e;
+}
+
+/* Upload helper */
+async function uploadFileToServer(file, endpoint = "/upload-asset", fieldName = "file") {
+  if (!file) throw new Error("No file provided");
+  const MAX_SIZE = 300 * 1024 * 1024;
+  if (file.size && file.size > MAX_SIZE) throw new Error(`File too large (${Math.round(file.size/1024/1024)}MB). Max ${MAX_SIZE/1024/1024}MB.`);
+  const url = buildApiUrl(endpoint);
   const formData = new FormData();
-  formData.append("file", file);
+  formData.append(fieldName, file);
   const res = await fetch(url, {
     method: "POST",
-    // Do not set Content-Type for FormData (browser will set boundary)
     headers: { "ngrok-skip-browser-warning": "69420" },
     body: formData
   });
   if (!res.ok) {
     let txt = "";
     try { txt = await res.text(); } catch {}
+    try {
+      const parsed = JSON.parse(txt || "{}");
+      if (parsed && (parsed.error || parsed.message)) throw new Error(`Upload failed (${res.status}) ${JSON.stringify(parsed)}`);
+    } catch {}
     throw new Error(`Upload failed (${res.status}) ${txt}`);
   }
   const data = await res.json().catch(()=> ({}));
   return data.imageUrl || data.fileUrl || data.url || data.path || "";
 }
 
-/**
- * Normalize config loaded from backend to a predictable shape for admin UI
- * Also strips the accept_terms / "I agree" checkbox field so backend won't persist it as an editable field.
- */
+/* Normalize config */
 function normalizeConfig(cfg = {}) {
   const config = { ...(typeof cfg === "object" && cfg !== null ? cfg : {}) };
 
@@ -48,7 +63,6 @@ function normalizeConfig(cfg = {}) {
     return ff;
   }) : [];
 
-  // Remove accept_terms / "I agree" checkbox from admin-editable fields.
   function isAcceptTermsField(f) {
     if (!f || typeof f !== "object") return false;
     const name = (f.name || "").toString().toLowerCase().replace(/\s+/g, "");
@@ -62,7 +76,6 @@ function normalizeConfig(cfg = {}) {
   config.images = Array.isArray(config.images) ? config.images : [];
   config.eventDetails = typeof config.eventDetails === "object" && config.eventDetails !== null ? config.eventDetails : {};
 
-  // Background: support backgroundColor OR backgroundMedia (image/video)
   if (config.backgroundMedia && typeof config.backgroundMedia === "object" && config.backgroundMedia.url) {
     config.backgroundMedia = { type: config.backgroundMedia.type || "image", url: config.backgroundMedia.url || "" };
   } else if (config.backgroundVideo && config.backgroundVideo) {
@@ -75,7 +88,6 @@ function normalizeConfig(cfg = {}) {
 
   config.backgroundColor = config.backgroundColor || config.background_color || "#ffffff";
 
-  // TERMS: support termsUrl and termsText (new) and label/required
   config.termsUrl = config.termsUrl || config.terms_url || config.terms || "";
   config.termsText = config.termsText || config.terms_text || config.termsBody || "";
   config.termsLabel = config.termsLabel || config.terms_label || "Terms & Conditions";
@@ -86,6 +98,23 @@ function normalizeConfig(cfg = {}) {
   return config;
 }
 
+/* ---------- DEFAULT EXHIBITOR FIELDS (admin-only defaults) ---------- */
+const DEFAULT_EXHIBITOR_FIELDS = [
+  { name: "title", label: "Surname", type: "radio", options: ["Mr.","Ms.","Dr."], required: true, visible: true },
+  { name: "name", label: "Name", type: "text", required: true, visible: true },
+  { name: "mobile", label: "Mobile No.", type: "number", required: false, visible: true, meta: { useOtp: true } },
+  { name: "email", label: "Email ID", type: "email", required: true, visible: true, meta: { useOtp: true } },
+  { name: "designation", label: "Designation", type: "text", required: false, visible: true },
+  { name: "company_name", label: "Company Name", type: "text", required: false, visible: true },
+  { name: "category", label: "Category", type: "select", options: ["MSME","NON MSME","Academic","Others"], required: false, visible: true },
+  { name: "category_other", label: "If Others -> Specify", type: "textarea", required: false, visible: true },
+  { name: "space_type", label: "Space Type", type: "radio", options: ["Shell","Bare"], required: false, visible: true },
+  { name: "space_size", label: "Space Size", type: "select", options: ["6sqm","9sqm","15sqm","18sqm","27sqm","30sqm","36sqm","54sqm","72sqm"], required: false, visible: true },
+  { name: "type_of_space", label: "Type of Space", type: "radio", options: ["Inline Booth (1 Side Open)","Corner Booth (2 Side Open)","Peninsula (3 Side Open)","Island (4 Side Open)"], required: false, visible: true },
+  { name: "product_details", label: "Product Details", type: "textarea", required: false, visible: true }
+];
+/* ---------- end defaults ---------- */
+
 export default function ExhibitorsAdmin() {
   const [config, setConfig] = useState(null);
   const [form, setForm] = useState({});
@@ -94,27 +123,61 @@ export default function ExhibitorsAdmin() {
   const [error, setError] = useState(null);
   const [uploading, setUploading] = useState(false);
 
+  // track server-provided field names so defaults are NOT persisted unless user modifies them
+  const serverFieldNamesRef = useRef(new Set());
+
   const fetchConfig = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/exhibitor-config`, { cache: "no-store", headers: { "Accept": "application/json", "ngrok-skip-browser-warning": "69420" } });
-      if (!res.ok) throw new Error(`Failed to fetch config (${res.status})`);
+      const res = await fetch(buildApiUrl("/exhibitor-config"), { cache: "no-store", headers: { "Accept": "application/json", "ngrok-skip-browser-warning": "69420" } });
+      if (!res.ok) {
+        const txt = await res.text().catch(()=>"");
+        throw new Error(`Failed to fetch config (${res.status}) ${txt}`);
+      }
       const cfg = await res.json();
-      setConfig(normalizeConfig(cfg));
+      const normalized = normalizeConfig(cfg);
+
+      // remember server field names (so we don't persist admin-only defaults)
+      serverFieldNamesRef.current = new Set((cfg.fields || []).map(f => (f && f.name) ? f.name : []));
+
+      // Merge defaults into editor view — mark them as admin defaults (meta.default=true)
+      try {
+        const existing = new Set((normalized.fields || []).map(f => (f && f.name) ? f.name : ""));
+        DEFAULT_EXHIBITOR_FIELDS.forEach(def => {
+          if (!existing.has(def.name)) {
+            const copy = clone(def);
+            copy.meta = copy.meta || {};
+            copy.meta.default = true; // indicates this field is a UI-only default unless edited
+            normalized.fields.push(copy);
+          }
+        });
+      } catch (e) {
+        // ignore
+      }
+
+      setConfig(normalized);
+      setError(null);
     } catch (e) {
       console.error("ExhibitorsAdmin load config error:", e && (e.stack || e));
       setError("Error loading config from backend. See server logs.");
+      // still set a config with defaults so admin can edit
+      const fallback = normalizeConfig({});
+      // attach defaults as admin-only defaults
+      fallback.fields = [];
+      DEFAULT_EXHIBITOR_FIELDS.forEach(def => {
+        const copy = clone(def);
+        copy.meta = copy.meta || {};
+        copy.meta.default = true;
+        fallback.fields.push(copy);
+      });
+      setConfig(fallback);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      await fetchConfig();
-    })();
-    return () => (mounted = false);
+    fetchConfig();
   }, [fetchConfig]);
 
   if (loading) return <div>Loading...</div>;
@@ -126,15 +189,42 @@ export default function ExhibitorsAdmin() {
       const cfg = clone(prev);
       const prevField = cfg.fields[idx] || {};
       const merged = { ...prevField, ...updates };
+      // If this was a default and the admin is editing it, mark as userAdded so it will persist
+      merged.meta = merged.meta || {};
+      if (prevField.meta && prevField.meta.default) {
+        merged.meta.userAdded = true;
+        delete merged.meta.default;
+      } else {
+        merged.meta.userAdded = merged.meta.userAdded || false;
+      }
       if (updates.type && ["select","radio"].includes(updates.type) && !Array.isArray(merged.options)) merged.options = [""];
       if (updates.type && !["select","radio"].includes(updates.type)) merged.options = [];
       cfg.fields[idx] = merged;
       return cfg;
     });
   }
+
   function deleteField(idx) { setConfig(prev => { const cfg = clone(prev); cfg.fields.splice(idx,1); return cfg; }); }
-  function addField() { setConfig(prev => { const cfg = clone(prev); cfg.fields.push({ name: `f${Date.now()}`, label: "New Field", type: "text", required:false, visible:true, options: [] }); return cfg; }); }
-  function addCheckboxField() { setConfig(prev => { const cfg = clone(prev); cfg.fields.push({ name: `cb${Date.now()}`, label: "Checkbox", type: "checkbox", required:false, visible:true, options: [] }); return cfg; }); }
+
+  function addField() {
+    setConfig(prev => {
+      const cfg = clone(prev);
+      const f = { name: `f${Date.now()}`, label: "New Field", type: "text", required:false, visible:true, options: [] };
+      f.meta = { userAdded: true };
+      cfg.fields.push(f);
+      return cfg;
+    });
+  }
+
+  function addCheckboxField() {
+    setConfig(prev => {
+      const cfg = clone(prev);
+      const f = { name: `cb${Date.now()}`, label: "Checkbox", type: "checkbox", required:false, visible:true, options: [] };
+      f.meta = { userAdded: true };
+      cfg.fields.push(f);
+      return cfg;
+    });
+  }
 
   function updateImage(idx, value) { setConfig(prev => { const cfg = clone(prev); cfg.images[idx] = value; return cfg; }); }
   function deleteImage(idx) { setConfig(prev => { const cfg = clone(prev); cfg.images.splice(idx,1); return cfg; }); }
@@ -148,7 +238,7 @@ export default function ExhibitorsAdmin() {
     setMsg("");
     setError(null);
     try {
-      const endpoint = (key === "termsUrl" || file.type === "application/pdf") ? "/api/upload-file" : "/api/upload-asset";
+      const endpoint = (key === "termsUrl" || file.type === "application/pdf") ? "/upload-file" : "/upload-asset";
       const url = await uploadFileToServer(file, endpoint);
       setConfig(prev => {
         const cfg = clone(prev);
@@ -196,11 +286,33 @@ export default function ExhibitorsAdmin() {
     setError(null);
     try {
       const toSave = stripAcceptTermsFields(config);
-      const canonical = normalizeConfig(toSave);
-      const res = await fetch(`${API_BASE}/api/exhibitor-config/config`, {
+
+      // Determine which fields to persist:
+      // - Always persist fields that were present on server originally
+      // - Persist fields that admin explicitly added/edited (meta.userAdded===true)
+      // - Do NOT persist admin-only defaults (meta.default===true) unless userEdited them (we set userAdded when edited)
+      const serverNames = serverFieldNamesRef.current || new Set();
+      const fieldsToPersist = (toSave.fields || []).filter(f => {
+        const meta = f.meta || {};
+        if (serverNames.has(f.name)) return true;
+        if (meta.userAdded) return true;
+        // if it's a default and not userAdded, skip it
+        if (meta.default) return false;
+        // otherwise persist
+        return true;
+      }).map(f => {
+        // strip internal meta before saving
+        const copy = { ...f };
+        if (copy.meta) delete copy.meta;
+        return copy;
+      });
+
+      const payload = { ...toSave, fields: fieldsToPersist };
+
+      const res = await fetch(buildApiUrl("/exhibitor-config/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
-        body: JSON.stringify(canonical)
+        body: JSON.stringify(payload)
       });
       if (!res.ok) {
         const txt = await res.text().catch(()=>"");
@@ -209,7 +321,15 @@ export default function ExhibitorsAdmin() {
       const json = await res.json().catch(()=>null);
       setMsg("Saved!");
       try { window.dispatchEvent(new Event("exhibitor-config-updated")); } catch {}
-      if (json && json.config) setConfig(normalizeConfig(json.config));
+      // After successful save, update serverFieldNames set to include persisted fields so defaults won't be re-saved
+      try {
+        const persistedNames = new Set((payload.fields || []).map(f => f.name));
+        serverFieldNamesRef.current = new Set([...serverFieldNamesRef.current, ...persistedNames]);
+      } catch {}
+      if (json && json.config) {
+        const normalized = normalizeConfig(json.config);
+        setConfig(normalized);
+      }
     } catch (e) {
       console.error("saveConfig error:", e && (e.stack || e));
       setError("Error saving: " + (e && e.message ? e.message : ""));
@@ -277,6 +397,8 @@ export default function ExhibitorsAdmin() {
             <label><input type="checkbox" checked={!!field.required} onChange={() => updateField(idx, { required: !field.required })} /> Required</label>
             <label><input type="checkbox" checked={!!field.visible} onChange={() => updateField(idx, { visible: !field.visible })} /> Visible</label>
             <button onClick={() => deleteField(idx)} className="text-red-500">Delete</button>
+            {/* indicate default-only fields in the admin UI */}
+            {field.meta && field.meta.default && <span className="ml-2 text-sm text-gray-500">Default (not on registration page unless edited)</span>}
           </div>
 
           {["select","radio"].includes(field.type) && (
@@ -314,17 +436,11 @@ export default function ExhibitorsAdmin() {
           <label className="ml-2"><input type="checkbox" checked={!!config.termsRequired} onChange={(e) => setConfig(clone({ ...config, termsRequired: e.target.checked }))} /><span className="ml-2">Require acceptance on registration</span></label>
         </div>
 
-        <label className="block mb-1 mt-3">Terms Text (editable):</label>
-        <textarea value={config.termsText || ""} onChange={(e) => updateTermsText(e.target.value)} rows={8} className="border px-2 w-full mb-2" placeholder="Paste or write full terms / T&C text here (optional)"></textarea>
-
+        
         <div className="mb-2">
           <strong>Preview:</strong>
-          {config.termsUrl ? (
-            <div className="mt-1"><a href={config.termsUrl} target="_blank" rel="noreferrer" className="text-indigo-700 underline">{config.termsUrl}</a></div>
-          ) : null}
-          {config.termsText ? (
-            <div className="mt-2 p-3 border rounded bg-gray-50" style={{ whiteSpace: "pre-wrap" }}>{config.termsText}</div>
-          ) : null}
+          {config.termsUrl ? (<div className="mt-1"><a href={config.termsUrl} target="_blank" rel="noreferrer" className="text-indigo-700 underline">{config.termsUrl}</a></div>) : null}
+          {config.termsText ? (<div className="mt-2 p-3 border rounded bg-gray-50" style={{ whiteSpace: "pre-wrap" }}>{config.termsText}</div>) : null}
         </div>
       </div>
 

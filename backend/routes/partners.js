@@ -1,104 +1,44 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
+const { ObjectId } = require('mongodb');
+const mongo = require('../utils/mongoClient');
 const { sendMail } = require('../utils/mailer');
 
-// Optional external controllers (if you have them)
-const controllers = require('../controllers/partnersController') || {};
-const registerPartnerController = controllers.registerPartner;
-const notifyPartnerController = controllers.notifyAdmin || controllers.notifyPartner || null;
-
-/* ---------- DB helpers ---------- */
-
-async function dbExec(sql, params = []) {
-  if (!db) throw new Error('DB module not found');
-  if (typeof db.execute === 'function') return await db.execute(sql, params);
-  if (typeof db.query === 'function') return await db.query(sql, params);
-  throw new Error('DB has no execute or query method');
-}
-
-function unwrapExecResult(execResult) {
-  if (Array.isArray(execResult)) {
-    if (execResult.length >= 1) return execResult[0];
-    return execResult;
-  }
-  return execResult;
-}
-
-function normalizeRows(rows) {
-  if (!rows && rows !== 0) return [];
-
-  if (Array.isArray(rows)) {
-    // mysql2 returns [rows, fields]
-    if (rows.length >= 1 && Array.isArray(rows[0])) return rows[0];
-    return rows;
-  }
-
-  if (typeof rows === 'object') {
-    const keys = Object.keys(rows);
-    const numericKeys = keys.filter((k) => /^\d+$/.test(k));
-    if (numericKeys.length > 0 && numericKeys.length === keys.length) {
-      return numericKeys
-        .map((k) => Number(k))
-        .sort((a, b) => a - b)
-        .map((n) => rows[String(n)]);
-    }
-    const allArrays = keys.length > 0 && keys.every((k) => Array.isArray(rows[k]));
-    if (allArrays) {
-      const lens = keys.map((k) => rows[k].length);
-      const uniq = Array.from(new Set(lens));
-      if (uniq.length === 1) {
-        const len = uniq[0];
-        const out = [];
-        for (let i = 0; i < len; i++) {
-          const r = {};
-          for (const k of keys) r[k] = rows[k][i];
-          out.push(r);
-        }
-        return out;
-      }
-    }
-    const vals = Object.values(rows);
-    if (Array.isArray(vals) && vals.length && typeof vals[0] === 'object') return vals;
-    return [rows];
-  }
-
-  return [];
-}
-
-function getAffectedRows(info) {
-  if (!info) return 0;
-  return info.affectedRows ?? info.affected_rows ?? info.affected ?? 0;
-}
-
-function camelToSnake(str = "") {
-  return String(str).replace(/([A-Z])/g, "_$1").toLowerCase();
-}
-
-/* ---------- Utilities: BigInt-safe JSON conversion ---------- */
+// parse JSON bodies for this router
+router.use(express.json({ limit: '5mb' }));
 
 /**
- * Recursively convert BigInt values to strings inside an object/array/value.
- * Returns a new value (does not modify the input).
+ * Helper: obtain a connected Db instance from utils/mongoClient
+ * Accepts both mongo.getDb() (async) and mongo.db (sync) shapes.
  */
+async function obtainDb() {
+  if (!mongo) return null;
+  if (typeof mongo.getDb === 'function') return await mongo.getDb();
+  if (mongo.db) return mongo.db;
+  return null;
+}
+
+function docToOutput(doc) {
+  if (!doc) return null;
+  const out = { ...(doc || {}) };
+  if (out._id) {
+    out.id = String(out._id);
+    delete out._id;
+  }
+  return out;
+}
+
+/* BigInt-safe JSON conversion (keeps interface compatibility) */
 function convertBigIntForJson(value) {
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-  if (Array.isArray(value)) {
-    return value.map(convertBigIntForJson);
-  }
+  if (typeof value === 'bigint') return value.toString();
+  if (Array.isArray(value)) return value.map(convertBigIntForJson);
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      out[k] = convertBigIntForJson(v);
-    }
+    for (const [k, v] of Object.entries(value)) out[k] = convertBigIntForJson(v);
     return out;
   }
   return value;
 }
-
-/* ---------- Routes ---------- */
 
 /**
  * POST /api/partners/step
@@ -107,6 +47,7 @@ function convertBigIntForJson(value) {
 router.post('/step', async (req, res) => {
   try {
     console.debug('[partners] step snapshot:', req.body);
+    // Optional: persist step snapshots if desired, e.g. to a `steps` collection.
     return res.json({ success: true });
   } catch (err) {
     console.error('[partners] step error:', err && (err.stack || err));
@@ -116,24 +57,15 @@ router.post('/step', async (req, res) => {
 
 /**
  * POST /api/partners
- * Registers a partner. Accepts many field name variants.
- * Important: ensures insertId (including BigInt) is converted to string before res.json().
+ * Register partner (Mongo-backed)
  */
 router.post('/', async (req, res) => {
-  // If you implemented a controller, prefer it (it should handle JSON-safe values itself).
-  if (typeof registerPartnerController === 'function') {
-    try {
-      return await registerPartnerController(req, res);
-    } catch (err) {
-      console.error('[partners] registerPartner controller threw:', err && (err.stack || err));
-      // fall through to inline implementation
-    }
-  }
-
   try {
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
     const body = req.body || {};
 
-    // tolerant extraction helper (case-sensitive first, then case-insensitive)
     const pick = (cands) => {
       for (const k of cands) {
         if (Object.prototype.hasOwnProperty.call(body, k) && body[k] !== undefined && body[k] !== null) return body[k];
@@ -155,31 +87,33 @@ router.post('/', async (req, res) => {
     const businessType = String(pick(['businessType','business_type','companyType']) || '').trim();
     const businessOther = String(pick(['businessOther','business_other','company_type_other']) || '').trim();
     const partnership = String(pick(['partnership','partnershipType','partnership_type']) || '').trim();
-    const terms = body.terms ? 1 : 0;
+    const terms = body.terms ? true : false;
 
     if (!mobile) {
       return res.status(400).json({ success: false, error: 'mobile is required' });
     }
 
-    const sql = `INSERT INTO partners (
-      surname, name, mobile, email, designation, company,
-      businessType, businessOther, partnership, terms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
-    const params = [surname || null, name || null, mobile || null, email || null, designation || null, company || null, businessType || null, businessOther || null, partnership || null, terms];
+    const doc = {
+      surname: surname || null,
+      name: name || null,
+      mobile: mobile || null,
+      email: email || null,
+      designation: designation || null,
+      company: company || null,
+      businessType: businessType || null,
+      businessOther: businessOther || null,
+      partnership: partnership || null,
+      terms: !!terms,
+      status: 'pending',
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
 
-    const execRes = await dbExec(sql, params);
-    const info = unwrapExecResult(execRes);
+    const col = db.collection('partners');
+    const r = await col.insertOne(doc);
+    const insertedId = r && r.insertedId ? String(r.insertedId) : null;
 
-    // Normalize insertId for JSON serialization (BigInt -> string)
-    let insertedId = null;
-    if (info && (info.insertId || info.insert_id)) {
-      const raw = info.insertId || info.insert_id;
-      insertedId = (typeof raw === 'bigint') ? raw.toString() : String(raw);
-    }
-
-    console.debug('[partners] insertedId:', insertedId);
-
-    // Respond with JSON-safe insertedId
+    // Respond immediately with a JSON-safe payload
     res.json(convertBigIntForJson({ success: true, insertedId }));
 
     // Background: acknowledgement email (best-effort)
@@ -187,21 +121,21 @@ router.post('/', async (req, res) => {
       try {
         if (!email) {
           console.warn('[partners] partner saved but no email present; skipping ack mail');
-          return;
-        }
-        const subject = 'RailTrans Expo — We received your partner request';
-        const text = `Hello ${name || company || ''},
+        } else {
+          const subject = 'RailTrans Expo — We received your partner request';
+          const text = `Hello ${name || company || ''},
 
 Thank you for your partner request. We have received your details and our team will get back to you soon.
 
 Regards,
 RailTrans Expo Team`;
-        const html = `<p>Hello ${name || company || ''},</p><p>Thank you for your partner request. We have received your details and our team will get back to you soon.</p>`;
-        try {
-          const mailResult = await sendMail({ to: email, subject, text, html });
-          console.debug('[mailer] partner ack result:', email, mailResult);
-        } catch (mailErr) {
-          console.error('[partners] partner ack email error:', mailErr && (mailErr.stack || mailErr));
+          const html = `<p>Hello ${name || company || ''},</p><p>Thank you for your partner request. We have received your details and our team will get back to you soon.</p>`;
+          try {
+            await sendMail({ to: email, subject, text, html });
+            console.debug('[partners] ack email sent to', email);
+          } catch (mailErr) {
+            console.error('[partners] partner ack email error:', mailErr && (mailErr.stack || mailErr));
+          }
         }
       } catch (bgErr) {
         console.error('[partners] background ack error:', bgErr && (bgErr.stack || bgErr));
@@ -211,7 +145,8 @@ RailTrans Expo Team`;
     // Background: notify admins (best-effort)
     (async () => {
       try {
-        const adminAddrs = (process.env.PARTNER_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim()).filter(Boolean);
+        const adminEnv = (process.env.PARTNER_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '');
+        const adminAddrs = adminEnv.split(',').map(s => s.trim()).filter(Boolean);
         if (!adminAddrs.length) {
           console.debug('[partners] no admin emails configured (PARTNER_ADMIN_EMAILS / ADMIN_EMAILS)');
           return;
@@ -233,16 +168,20 @@ Mobile: ${mobile || ''}
 Email: ${email || ''}`;
 
         await Promise.all(adminAddrs.map(async (a) => {
-          try { await sendMail({ to: a, subject, text, html }); } catch (e) { console.error('[mailer] admin notify error', a, e && e.message); }
+          try {
+            await sendMail({ to: a, subject, text, html });
+          } catch (e) {
+            console.error('[mailer] admin notify error', a, e && e.message);
+          }
         }));
       } catch (bgErr) {
         console.error('[partners] background admin notify error:', bgErr && (bgErr.stack || bgErr));
       }
     })();
 
+    return;
   } catch (err) {
     console.error('[partners] register error:', err && (err.stack || err));
-    // Avoid returning non-serializable properties in error response
     return res.status(500).json({ success: false, error: err && err.message ? err.message : String(err) });
   }
 });
@@ -255,11 +194,14 @@ router.post('/notify', async (req, res) => {
   try {
     const { partnerId, form } = req.body || {};
     let partner = null;
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
 
     if (partnerId) {
-      const raw = await dbExec('SELECT * FROM partners WHERE id = ? LIMIT 1', [partnerId]);
-      const rows = normalizeRows(raw);
-      partner = rows && rows.length ? rows[0] : null;
+      let oid;
+      try { oid = new ObjectId(partnerId); } catch { return res.status(400).json({ success: false, error: 'invalid partnerId' }); }
+      const doc = await db.collection('partners').findOne({ _id: oid });
+      partner = doc ? docToOutput(doc) : null;
     } else if (form) {
       partner = form;
     } else {
@@ -279,12 +221,15 @@ RailTrans Expo Team`;
 
     const resPartnerMail = to ? await sendMail({ to, subject, text, html }).catch(e => ({ success: false, error: String(e && e.message ? e.message : e) })) : { success: false, error: 'no-recipient' };
 
-    const adminAddrs = (process.env.PARTNER_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim()).filter(Boolean);
+    const adminEnv = (process.env.PARTNER_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '');
+    const adminAddrs = adminEnv.split(',').map(s => s.trim()).filter(Boolean);
     const adminResults = [];
+
     if (adminAddrs.length) {
       const adminSubject = `Partner notification — ${partnerId || (partner && (partner.name || partner.company)) || 'new'}`;
       const adminHtml = `<p>Partner notification sent.</p><pre>${JSON.stringify(partner, null, 2)}</pre>`;
       const adminText = `Partner notification\n${JSON.stringify(partner, null, 2)}`;
+
       for (const a of adminAddrs) {
         try {
           const r = await sendMail({ to: a, subject: adminSubject, text: adminText, html: adminHtml });
@@ -304,62 +249,65 @@ RailTrans Expo Team`;
 
 /* ---------- Read / Update / Delete endpoints ---------- */
 
+/**
+ * GET /api/partners
+ */
 router.get('/', async (req, res) => {
   try {
-    const raw = await dbExec('SELECT * FROM partners ORDER BY id DESC');
-    const rows = normalizeRows(raw);
-    return res.json(convertBigIntForJson(rows));
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ error: 'database not available' });
+
+    const rows = await db.collection('partners').find({}).sort({ created_at: -1 }).limit(1000).toArray();
+    return res.json(convertBigIntForJson(rows.map(docToOutput)));
   } catch (err) {
     console.error('[partners] fetch error:', err && (err.stack || err));
     return res.status(500).json({ error: 'Failed to fetch partners' });
   }
 });
 
+/**
+ * GET /api/partners/:id
+ */
 router.get('/:id', async (req, res) => {
   try {
-    const raw = await dbExec('SELECT * FROM partners WHERE id = ? LIMIT 1', [req.params.id]);
-    const rows = normalizeRows(raw);
-    return res.json(convertBigIntForJson(rows && rows.length ? rows[0] : {}));
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ error: 'database not available' });
+    let oid;
+    try { oid = new ObjectId(req.params.id); } catch { return res.status(400).json({ error: 'invalid id' }); }
+    const doc = await db.collection('partners').findOne({ _id: oid });
+    return res.json(convertBigIntForJson(docToOutput(doc) || {}));
   } catch (err) {
     console.error('[partners] fetch by id error:', err && (err.stack || err));
     return res.status(500).json({ error: 'Failed to fetch partner' });
   }
 });
 
+/**
+ * PUT /api/partners/:id
+ */
 router.put('/:id', async (req, res) => {
   try {
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
+    let oid;
+    try { oid = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
+
     const fields = { ...(req.body || {}) };
     delete fields.id;
-    const keys = Object.keys(fields);
-    if (!keys.length) return res.status(400).json({ success: false, error: 'No fields to update' });
 
-    const colRes = await dbExec('SHOW COLUMNS FROM partners');
-    const colRows = unwrapExecResult(colRes);
-    const colMap = new Map((Array.isArray(colRows) ? colRows : []).map(r => [String(r.Field || r.COLUMN_NAME || '').toLowerCase(), r.Field || r.COLUMN_NAME || r]));
-
-    const assignments = [];
-    const values = [];
-    for (const k of keys) {
-      const cand = colMap.get(k.toLowerCase()) ?? colMap.get(camelToSnake(k).toLowerCase());
-      if (cand) {
-        let v = fields[k];
-        if (v !== null && typeof v === 'object') {
-          try { v = JSON.stringify(v); } catch { v = String(v); }
-        }
-        assignments.push(`${cand} = ?`);
-        values.push(v);
-      } else {
-        console.debug(`[partners] Ignoring update field "${k}" - not a column`);
-      }
+    // convert nested objects to strings only if necessary; Mongo accepts objects natively
+    const updateData = {};
+    for (const [k, v] of Object.entries(fields)) {
+      updateData[k] = v;
     }
 
-    if (!assignments.length) return res.status(400).json({ success: false, error: 'No valid fields to update' });
+    if (Object.keys(updateData).length === 0) return res.status(400).json({ success: false, error: 'No fields to update' });
 
-    values.push(req.params.id);
-    const execRes = await dbExec(`UPDATE partners SET ${assignments.join(', ')} WHERE id = ?`, values);
-    const info = unwrapExecResult(execRes);
-    const affected = getAffectedRows(info);
-    if (!affected) return res.status(404).json({ success: false, error: 'Partner not found' });
+    updateData.updated_at = new Date();
+
+    const r = await db.collection('partners').updateOne({ _id: oid }, { $set: updateData });
+    if (!r.matchedCount) return res.status(404).json({ success: false, error: 'Partner not found' });
 
     return res.json({ success: true });
   } catch (err) {
@@ -368,12 +316,20 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/partners/:id
+ */
 router.delete('/:id', async (req, res) => {
   try {
-    const execRes = await dbExec('DELETE FROM partners WHERE id = ?', [req.params.id]);
-    const info = unwrapExecResult(execRes);
-    const affected = getAffectedRows(info);
-    if (!affected) return res.status(404).json({ success: false, error: 'Partner not found' });
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+
+    let oid;
+    try { oid = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
+
+    const r = await db.collection('partners').deleteOne({ _id: oid });
+    if (!r.deletedCount) return res.status(404).json({ success: false, error: 'Partner not found' });
+
     return res.json({ success: true });
   } catch (err) {
     console.error('[partners] delete error:', err && (err.stack || err));
@@ -381,54 +337,49 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-/* ---------- Approve / Cancel endpoints (keep same email behavior) ---------- */
+/* ---------- Approve / Cancel endpoints ---------- */
 
+/**
+ * POST /api/partners/:id/approve
+ */
 router.post('/:id/approve', async (req, res) => {
   const id = req.params.id;
   const admin = req.body && req.body.admin ? String(req.body.admin) : 'web-admin';
   if (!id) return res.status(400).json({ success: false, error: 'Missing id' });
-
   try {
-    let hasApprovedCols = false;
-    try {
-      const colCheck = await dbExec("SHOW COLUMNS FROM partners LIKE 'approved_by'");
-      const checkRows = normalizeRows(colCheck);
-      hasApprovedCols = Array.isArray(checkRows) && checkRows.length > 0;
-    } catch (e) {
-      console.warn('Could not check approved_by column existence:', e && e.message);
-      hasApprovedCols = false;
-    }
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+    let oid;
+    try { oid = new ObjectId(id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
 
-    const sql = hasApprovedCols
-      ? `UPDATE partners SET status = 'approved', approved_by = ?, approved_at = NOW() WHERE id = ?`
-      : `UPDATE partners SET status = 'approved' WHERE id = ?`;
-    const params = hasApprovedCols ? [admin, id] : [id];
+    const update = {
+      status: 'approved',
+      approved_by: admin,
+      approved_at: new Date(),
+      updated_at: new Date(),
+    };
+    const r = await db.collection('partners').updateOne({ _id: oid }, { $set: update });
+    if (!r.matchedCount) return res.status(404).json({ success: false, error: 'Partner not found' });
 
-    const execRes = await dbExec(sql, params);
-    const info = unwrapExecResult(execRes);
-    const affected = getAffectedRows(info);
-    if (!affected) return res.status(404).json({ success: false, error: 'Partner not found' });
+    const doc = await db.collection('partners').findOne({ _id: oid });
+    const out = docToOutput(doc);
 
-    const raw = await dbExec('SELECT * FROM partners WHERE id = ? LIMIT 1', [id]);
-    const rows = normalizeRows(raw);
-    const updated = rows && rows.length ? rows[0] : null;
+    res.json(convertBigIntForJson({ success: true, id, updated: out }));
 
-    res.json(convertBigIntForJson({ success: true, id, updated }));
-
-    // send approval email in background...
-    if (updated && updated.email) {
+    // Background email
+    if (out && out.email) {
       (async () => {
         try {
-          const to = updated.email;
-          const fullName = updated.name || updated.company || '';
+          const to = out.email;
+          const fullName = out.name || out.company || '';
           const subject = `Your partner request has been approved — RailTrans Expo`;
           const text = `Hello ${fullName || ''},
 
-Good news — your partner registration (ID: ${updated.id}) has been approved. Our team will contact you with next steps.
+Good news — your partner registration (ID: ${out.id}) has been approved. Our team will contact you with next steps.
 
 Regards,
 RailTrans Expo Team`;
-          const html = `<p>Hello ${fullName || ''},</p><p>Your partner registration (ID: <strong>${updated.id}</strong>) has been <strong>approved</strong>.</p>`;
+          const html = `<p>Hello ${fullName || ''},</p><p>Your partner registration (ID: <strong>${out.id}</strong>) has been <strong>approved</strong>.</p>`;
           await sendMail({ to, subject, text, html });
           console.debug('[mailer] Approval email result for partner:', to);
         } catch (mailErr) {
@@ -444,52 +395,47 @@ RailTrans Expo Team`;
   }
 });
 
+/**
+ * POST /api/partners/:id/cancel
+ */
 router.post('/:id/cancel', async (req, res) => {
   const id = req.params.id;
   const admin = req.body && req.body.admin ? String(req.body.admin) : 'web-admin';
   if (!id) return res.status(400).json({ success: false, error: 'Missing id' });
-
   try {
-    let hasCancelledCols = false;
-    try {
-      const colCheck = await dbExec("SHOW COLUMNS FROM partners LIKE 'cancelled_by'");
-      const checkRows = normalizeRows(colCheck);
-      hasCancelledCols = Array.isArray(checkRows) && checkRows.length > 0;
-    } catch (e) {
-      console.warn('Could not check cancelled_by column existence:', e && e.message);
-      hasCancelledCols = false;
-    }
+    const db = await obtainDb();
+    if (!db) return res.status(500).json({ success: false, error: 'database not available' });
+    let oid;
+    try { oid = new ObjectId(id); } catch { return res.status(400).json({ success: false, error: 'invalid id' }); }
 
-    const sql = hasCancelledCols
-      ? `UPDATE partners SET status = 'cancelled', cancelled_by = ?, cancelled_at = NOW() WHERE id = ?`
-      : `UPDATE partners SET status = 'cancelled' WHERE id = ?`;
-    const params = hasCancelledCols ? [admin, id] : [id];
+    const update = {
+      status: 'cancelled',
+      cancelled_by: admin,
+      cancelled_at: new Date(),
+      updated_at: new Date(),
+    };
+    const r = await db.collection('partners').updateOne({ _id: oid }, { $set: update });
+    if (!r.matchedCount) return res.status(404).json({ success: false, error: 'Partner not found' });
 
-    const execRes = await dbExec(sql, params);
-    const info = unwrapExecResult(execRes);
-    const affected = getAffectedRows(info);
-    if (!affected) return res.status(404).json({ success: false, error: 'Partner not found' });
+    const doc = await db.collection('partners').findOne({ _id: oid });
+    const out = docToOutput(doc);
 
-    const raw = await dbExec('SELECT * FROM partners WHERE id = ? LIMIT 1', [id]);
-    const rows = normalizeRows(raw);
-    const updated = rows && rows.length ? rows[0] : null;
+    res.json(convertBigIntForJson({ success: true, id, updated: out }));
 
-    res.json(convertBigIntForJson({ success: true, id, updated }));
-
-    // send cancellation email in background...
-    if (updated && updated.email) {
+    // Background email
+    if (out && out.email) {
       (async () => {
         try {
-          const to = updated.email;
-          const fullName = updated.name || updated.company || '';
+          const to = out.email;
+          const fullName = out.name || out.company || '';
           const subject = `Your partner registration has been cancelled — RailTrans Expo`;
           const text = `Hello ${fullName || 'there'},
 
-Your partner registration (ID: ${updated.id}) has been cancelled. If you believe this is an error, contact support@railtransexpo.com.
+Your partner registration (ID: ${out.id}) has been cancelled. If you believe this is an error, contact support@railtransexpo.com.
 
 Regards,
 RailTrans Expo Team`;
-          const html = `<p>Hello ${fullName || 'there'},</p><p>Your partner registration (ID: <strong>${updated.id}</strong>) has been <strong>cancelled</strong>.</p>`;
+          const html = `<p>Hello ${fullName || 'there'},</p><p>Your partner registration (ID: <strong>${out.id}</strong>) has been <strong>cancelled</strong>.</p>`;
           await sendMail({ to, subject, text, html });
           console.debug('[mailer] Cancel email result for partner:', to);
         } catch (mailErr) {

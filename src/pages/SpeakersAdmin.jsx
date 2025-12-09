@@ -3,7 +3,7 @@ import DynamicRegistrationForm from "./DynamicRegistrationForm";
 
 function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-const API_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) || (typeof window !== "undefined" && window.location && window.location.origin) || "http://localhost:5000").replace(/\/$/, "");
+const API_BASE = (process.env.REACT_APP_API_BASE || window.__API_BASE__ || (typeof window !== "undefined" && window.__CONFIG__ && window.__CONFIG__.backendUrl) || (typeof window !== "undefined" && window.location && window.location.origin) || "/api").replace(/\/$/, "");
 
 async function uploadFileToServer(file, endpoint = "/api/upload-asset") {
   const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint}`;
@@ -65,7 +65,7 @@ function normalizeConfig(cfg = {}) {
 
   // TERMS
   config.termsUrl = config.termsUrl || config.terms_url || config.terms || "";
-  config.termsText = config.termsText || config.terms_text || config.termsBody || "";
+  // removed termsText handling (per request)
   config.termsLabel = config.termsLabel || config.terms_label || "Terms & Conditions";
   config.termsRequired = !!config.termsRequired || !!config.terms_required;
 
@@ -73,6 +73,23 @@ function normalizeConfig(cfg = {}) {
 
   return config;
 }
+
+/* ---------- DEFAULT FIELDS (as requested) ---------- */
+/* Use these defaults so the admin UI always shows these fields if DB config is empty */
+const DEFAULT_SPEAKER_FIELDS = [
+  { name: "title", label: "Title", type: "radio", options: ["Mr.", "Ms.", "Dr."], required: true, visible: true },
+  { name: "name", label: "Name", type: "text", required: true, visible: true },
+  { name: "mobile", label: "Mobile No.", type: "number", required: false, visible: true },
+  { name: "email", label: "Email ID", type: "email", required: true, visible: true, meta: { useOtp: true } },
+  { name: "designation", label: "Designation", type: "text", required: false, visible: true },
+  { name: "company", label: "Company", type: "text", required: false, visible: true },
+  { name: "company_other_details", label: "If Not -> Other details", type: "textarea", required: false, visible: true },
+  { name: "organization_type", label: "Organization Type", type: "select", options: ["Govt", "PSU", "Private", "Academics", "Think Tank", "Others"], required: false, visible: true },
+  { name: "organization_type_other", label: "If Others -> Other organization", type: "textarea", required: false, visible: true },
+  { name: "slot_duration", label: "Slot Duration", type: "select", options: ["5 min", "10 min", "15 min", "20 min"], required: false, visible: true },
+  { name: "topic", label: "Topic", type: "text", required: false, visible: true },
+];
+/* ---------- end defaults ---------- */
 
 export default function SpeakersAdmin() {
   const [config, setConfig] = useState(null);
@@ -90,7 +107,19 @@ export default function SpeakersAdmin() {
         if (!res.ok) throw new Error(`Failed to fetch config (${res.status})`);
         const cfg = await res.json();
         if (!mounted) return;
-        setConfig(normalizeConfig(cfg));
+        const normalized = normalizeConfig(cfg);
+
+        // merge defaults: add any default fields not already present
+        try {
+          const existing = new Set((normalized.fields || []).map(f => (f && f.name) ? f.name : ""));
+          DEFAULT_SPEAKER_FIELDS.forEach(def => {
+            if (!existing.has(def.name)) normalized.fields.push(clone(def));
+          });
+        } catch (e) {
+          // ignore merge errors
+        }
+
+        setConfig(normalized);
       } catch (e) {
         console.error("SpeakersAdmin load config error:", e && (e.stack || e));
         setError("Error loading config from backend. See server logs.");
@@ -221,6 +250,7 @@ export default function SpeakersAdmin() {
             : <img src={config.backgroundMedia.url} alt="Background" style={{ maxWidth: 400 }} />
         ) : <span className="text-sm text-gray-500">No background media set</span>}
       </div>
+
       <div className="flex gap-3 items-center mb-3">
         <input type="file" accept="image/*" onChange={(e) => handleAssetUpload(e, "backgroundMedia", null, "image")} disabled={uploading} />
         <input type="file" accept="video/*" onChange={(e) => handleAssetUpload(e, "backgroundMedia", null, "video")} disabled={uploading} />
@@ -300,14 +330,7 @@ export default function SpeakersAdmin() {
           <label className="ml-2"><input type="checkbox" checked={!!config.termsRequired} onChange={(e) => setConfig(clone({ ...config, termsRequired: e.target.checked }))} /><span className="ml-2">Require acceptance on registration</span></label>
         </div>
 
-        <label className="block mb-1 mt-3">Terms Text (editable):</label>
-        <textarea value={config.termsText || ""} onChange={(e) => updateTermsText(e.target.value)} rows={8} className="border px-2 w-full mb-2" placeholder="Paste or write full terms / T&C text here (optional)"></textarea>
-
-        <div className="mb-2">
-          <strong>Preview:</strong>
-          {config.termsUrl ? (<div className="mt-1"><a href={config.termsUrl} target="_blank" rel="noreferrer" className="text-indigo-700 underline">{config.termsUrl}</a></div>) : null}
-          {config.termsText ? (<div className="mt-2 p-3 border rounded bg-gray-50" style={{ whiteSpace: "pre-wrap" }}>{config.termsText}</div>) : null}
-        </div>
+        {/* Terms text editable removed as requested */}
       </div>
 
       {/* Event Details */}

@@ -1,182 +1,206 @@
-// url: (local file) server.js
-require("dotenv").config();
+// server.js
+require('dotenv').config();
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const cors = require('cors');
 
-const express = require("express");
-const path = require("path");
-const fs = require("fs");
 const app = express();
 
-const cors = require("cors");
+// --- Ensure uploads directory exists ---
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, "uploads");
-try {
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-} catch (e) {
-  console.warn("Could not ensure uploads directory:", e && e.message);
-}
-
-// --- Simple request logger (helps see if phone/ngrok requests reach this server) ---
-app.use((req, res, next) => {
-  try {
-    console.log(
-      `[REQ] ${new Date().toISOString()} ${req.method} ${req.originalUrl} host=${req.headers.host} referer=${req.headers.referer || ""}`
-    );
-  } catch (e) {
-    /* ignore logging errors */
-  }
-  next();
-});
-
-// CORS (kept permissive for dev - lock down in production)
-const allowedOrigins = [
-  process.env.APP_URL,
-  process.env.APP_URL2,
-].filter(Boolean);
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (!allowedOrigins || allowedOrigins.length === 0) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  } else if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    // development fallback - allow all (remove/restrict in prod)
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning"
-  );
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-const PORT = process.env.PORT || 5000;
-app.use(express.json({ limit: "20mb" })); // supports base64 PDFs
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-
-// ---------- IMPORTANT FIX: serve uploads with correct MIME + CORS + Accept-Ranges ----------
-app.use("/uploads", express.static(uploadsDir, {
+app.use('/uploads', express.static(uploadsDir, {
   setHeaders: (res, filePath) => {
-    // Ensure correct MIME for common video types (override if server/mime lookup is wrong)
-    if (filePath.match(/\.(mp4)$/i)) {
-      res.setHeader("Content-Type", "video/mp4");
-    } else if (filePath.match(/\.(webm)$/i)) {
-      res.setHeader("Content-Type", "video/webm");
-    }
-    // Allow cross-origin access from frontend (replace '*' with your origin in prod)
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    // Allow the custom header used by client
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, ngrok-skip-browser-warning");
-    // Expose Accept-Ranges (useful for video seeking)
-    res.setHeader("Accept-Ranges", "bytes");
+    if (filePath.match(/\.(mp4)$/i)) res.setHeader('Content-Type', 'video/mp4');
+    if (filePath.match(/\.(webm)$/i)) res.setHeader('Content-Type', 'video/webm');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Accept-Ranges', 'bytes');
   }
 }));
 
-// Helper to safely require route modules without crashing server if a file is missing.
-// If the module cannot be required, returns a router that responds 501 on each path.
-function safeRequireRoutes(routePath, name) {
-  try {
-    const mod = require(routePath);
-    // If the module is an express.Router or function, return it; else try to return as router.default
-    if (typeof mod === "function" || typeof mod === "object") return mod;
-    return mod.default || mod;
-  } catch (err) {
-    console.warn(`Warning: route module ${routePath} (${name}) could not be loaded:`, err && err.message);
-    const r = express.Router();
-    r.all("/*", (req, res) => res.status(501).json({ error: `Route ${name} not implemented on server` }));
-    return r;
-  }
+// --- Basic middleware ---
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// --- CORS (configurable) ---
+const defaultOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
+const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.REACT_APP_API_BASE_URL || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (process.env.NODE_ENV !== 'production') return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
+}));
+
+// --- Simple request logger ---
+app.use((req, res, next) => {
+  console.log(`[REQ] ${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+// --- Connect to Mongo (if used) ---
+let mongoClient = null;
+try { mongoClient = require('./utils/mongoClient'); } catch (e) { mongoClient = null; }
+
+// --- Routes ---
+// Load core routers (some may be SQL or Mongo variants)
+let visitorsRouter = null;
+let visitorConfigRouter = null;
+try { visitorsRouter = require('./routes/visitors-mongo'); } catch (e) { try { visitorsRouter = require('./routes/visitors'); } catch (e2) { visitorsRouter = null; } }
+try { visitorConfigRouter = require('./routes/visitor-config-mongo'); } catch (e) { try { visitorConfigRouter = require('./routes/visitorConfig'); } catch (e2) { visitorConfigRouter = null; } }
+
+let exhibitorsRouter = null;
+try { exhibitorsRouter = require('./routes/exhibitors-mongo'); } catch (e) { try { exhibitorsRouter = require('./routes/exhibitors'); } catch (e2) { exhibitorsRouter = null; } }
+
+let exhibitorConfigRouter = null;
+try { exhibitorConfigRouter = require('./routes/exhibitor-config-mongo'); } catch (e) { try { exhibitorConfigRouter = require('./routes/exhibitorConfig'); } catch (e2) { exhibitorConfigRouter = null; } }
+
+let partnersRouter = null;
+try { partnersRouter = require('./routes/partners-mongo'); } catch (e) { try { partnersRouter = require('./routes/partners'); } catch (e2) { partnersRouter = null; } }
+
+let partnerConfigRouter = null;
+{ try { partnerConfigRouter = require('./routes/partnerConfig'); } catch (e2) { partnerConfigRouter = null; } }
+
+let speakersRouter = null;
+try { speakersRouter = require('./routes/speakers-mongo'); } catch (e) { try { speakersRouter = require('./routes/speakers'); } catch (e2) { speakersRouter = null; } }
+
+let speakerConfigMongoRouter = null;
+let speakerConfigRouter = null;
+try { speakerConfigMongoRouter = require('./routes/speaker-config-mongo'); } catch (e) { speakerConfigMongoRouter = null; }
+try { speakerConfigRouter = require('./routes/speakerConfig'); } catch (e) { speakerConfigRouter = null; }
+
+let awardeesRouter = null;
+try { awardeesRouter = require('./routes/awardees-mongo'); } catch (e) { try { awardeesRouter = require('./routes/awardees'); } catch (e2) { awardeesRouter = null; } }
+
+let awardeeConfigRouter = null;
+try { awardeeConfigRouter = require('./routes/awardee-config-mongo'); } catch (e) { try { awardeeConfigRouter = require('./routes/awardeeConfig'); } catch (e2) { awardeeConfigRouter = null; } }
+
+const otpRouter = (() => { try { return require('./routes/otp'); } catch { return null; } })();
+const paymentRouter = (() => { try { return require('./routes/payment'); } catch { return null; } })();
+const emailRouter = (() => { try { return require('./routes/email'); } catch { return null; } })();
+const remindersRouter = (() => { try { return require('./routes/reminders'); } catch { return null; } })();
+const ticketsScanRouter = (() => { try { return require('./routes/tickets-scan'); } catch { return null; } })();
+const ticketsUpgradeRouter = (() => { try { return require('./routes/tickets-upgrade'); } catch { return null; } })();
+const imageUploadRouter = (() => { try { return require('./routes/imageUpload'); } catch { return null; } })();
+
+let adminRouter = null;
+try { adminRouter = require('./routes/adminConfig'); } catch (e) { adminRouter = null; }
+
+// --- Mount routes (always relative paths) ---
+// Visitors
+if (visitorsRouter) app.use('/api/visitors', visitorsRouter); else console.warn('No visitors router found');
+if (visitorConfigRouter) app.use('/api/visitor-config', visitorConfigRouter); else console.warn('No visitor-config router found');
+
+// Exhibitors CRUD
+if (exhibitorsRouter) app.use('/api/exhibitors', exhibitorsRouter); else console.warn('No exhibitors router found');
+
+// exhibitor-config must be available at /api/exhibitor-config for frontend
+if (exhibitorConfigRouter) {
+  app.use('/api/exhibitor-config', exhibitorConfigRouter);
+} else {
+  console.warn('No exhibitor-config router found (routes/exhibitor-config-mongo.js or routes/exhibitorConfig.js missing)');
 }
 
-// Import registration/config routes (use safeRequireRoutes)
-const visitorsRoutes = safeRequireRoutes("./routes/visitors", "visitors");
-const speakersRoutes = safeRequireRoutes("./routes/speakers", "speakers");
-const partnersRoutes = safeRequireRoutes("./routes/partners", "partners");
-const exhibitorsRoutes = safeRequireRoutes("./routes/exhibitors", "exhibitors");
-const awardeesRoutes = safeRequireRoutes("./routes/awardees", "awardees");
+// Partners: partners CRUD and partner-config (ensure mounted at /api/partner-config)
+if (partnersRouter) app.use('/api/partners', partnersRouter); else console.warn('No partners CRUD router found');
+if (partnerConfigRouter) {
+  app.use('/api/partner-config', partnerConfigRouter);
+} else {
+  // Provide a safe fallback endpoint to avoid frontend 404 when router file is missing.
+  console.warn('No partner-config router found (routes/partner-config-mongo.js or routes/partnerConfig.js missing). Mounting fallback /api/partner-config that returns empty config.');
+  app.get('/api/partner-config', (req, res) => res.json({ fields: [], images: [], eventDetails: {} }));
+}
 
-const exhibitorConfigRoutes = safeRequireRoutes("./routes/exhibitorConfig", "exhibitor-config");
-const visitorConfigRoutes = safeRequireRoutes("./routes/visitorConfig", "visitor-config");
-const partnerConfigRoutes = safeRequireRoutes("./routes/partnerConfig", "partner-config");
-const speakerConfigRoutes = safeRequireRoutes("./routes/speakerConfig", "speaker-config");
-const awardeeConfigRoutes = safeRequireRoutes("./routes/awardeeConfig", "awardee-config");
-const imageUploadRoutes = safeRequireRoutes("./routes/imageUpload", "image-upload");
+// Speakers (CRUD)
+if (speakersRouter) app.use('/api/speakers', speakersRouter); else console.warn('No speakers router found');
+// speaker-config: prefer mongo then SQL fallback at /api/speaker-config
+if (speakerConfigMongoRouter) app.use('/api/speaker-config', speakerConfigMongoRouter);
+else if (speakerConfigRouter) app.use('/api/speaker-config', speakerConfigRouter);
+else {
+  console.warn('No speaker-config router found (routes/speaker-config-mongo.js or routes/speakerConfig.js missing) - mounting fallback');
+  app.get('/api/speaker-config', (req, res) => res.json({ fields: [], images: [], eventDetails: {} }));
+}
 
-// Admin config route
-const adminConfigRoutes = safeRequireRoutes("./routes/adminConfig", "admin-config");
+// Awardees CRUD and config
+if (awardeesRouter) app.use('/api/awardees', awardeesRouter); else console.warn('No awardees CRUD router found');
+if (awardeeConfigRouter) app.use('/api/awardee-config', awardeeConfigRouter);
+else {
+  console.warn('No awardee-config router found - mounting fallback');
+  app.get('/api/awardee-config', (req, res) => res.json({ fields: [], images: [], eventDetails: {} }));
+}
 
-// OTP, Payment, Email routes
-const otpRoutes = safeRequireRoutes("./routes/otp", "otp");
-const paymentRoutes = safeRequireRoutes("./routes/payment", "payment");
-const emailRoutes = safeRequireRoutes("./routes/email", "email");
+// Other API routes (mount if available)
+if (otpRouter) app.use('/api/otp', otpRouter);
+if (paymentRouter) app.use('/api/payment', paymentRouter);
+if (emailRouter) app.use('/api/email', emailRouter);
+if (remindersRouter) app.use('/api/reminders', remindersRouter);
+if (ticketsScanRouter) app.use('/api/tickets', ticketsScanRouter);
+if (ticketsUpgradeRouter) app.use('/api/tickets', ticketsUpgradeRouter);
 
-// Additional routes that may be used by frontend
-const ticketsScanRoutes = safeRequireRoutes("./routes/tickets-scan", "tickets-scan");
+// Mount image/upload routes at /api so frontend calls like /api/upload-asset and /api/upload-file resolve correctly.
+if (imageUploadRouter) app.use('/api', imageUploadRouter); else console.warn('No image upload router found (routes/imageUpload.js missing)');
 
-// Mount registration and config routes
-app.use("/api/visitors", visitorsRoutes);
-app.use("/api/speakers", speakersRoutes);
-app.use("/api/partners", partnersRoutes);
-app.use("/api/exhibitors", exhibitorsRoutes);
-app.use("/api/awardees", awardeesRoutes);
+if (adminRouter) app.use('/api', adminRouter);
 
-// Config endpoints (note: the fallback above will always respond if nothing else)
-app.use("/api/exhibitor-config", exhibitorConfigRoutes);
-app.use("/api/visitor-config", visitorConfigRoutes);
-app.use("/api/partner-config", partnerConfigRoutes);
-app.use("/api/speaker-config", speakerConfigRoutes);
-app.use("/api/awardee-config", awardeeConfigRoutes);
+// --- Health & root ---
+app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/', (req, res) => res.send('API server is running'));
 
-// image upload and admin config
-app.use("/api", imageUploadRoutes);
-app.use("/api", adminConfigRoutes);
-
-// OTP/Payment/Email
-app.use("/api/otp", otpRoutes);
-app.use("/api/payment", paymentRoutes);
-
-// Mount email route under /api/email and /api/mailer for backward compatibility
-app.use("/api/email", emailRoutes);
-app.use("/api/mailer", emailRoutes);
-
-// Tickets scan/routes
-app.use("/api/tickets", ticketsScanRoutes);
-
-// Optional: expose reminders and tickets-upgrade if present
-const remindersRoutes = safeRequireRoutes("./routes/reminders", "reminders");
-app.use("/api/reminders", remindersRoutes);
-
-const ticketsUpgradeRoutes = safeRequireRoutes("./routes/tickets-upgrade", "tickets-upgrade");
-app.use("/api/tickets/upgrade", ticketsUpgradeRoutes);
-
-// Health + SMTP diagnostics
-app.get("/api/health", (req, res) => {
-  res.json({
-    ok: true,
-    smtpConfigured: !!(process.env.SMTP_HOST || process.env.SMTP_SERVICE || process.env.SMTP_USER),
-    host: process.env.SMTP_HOST || process.env.SMTP_SERVICE || null,
-    uploadsDirExists: fs.existsSync(uploadsDir),
-  });
-});
-
-app.get("/", (req, res) => {
-  res.send("API is running");
-});
-
-// --- error handler ---
+// --- Error handler ---
 app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err && err.stack ? err.stack : err);
-  if (err && err.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({ error: "File too large" });
+  console.error('Unhandled error:', err && (err.stack || err));
+  if (err && /Not allowed by CORS/.test(String(err.message || ''))) {
+    return res.status(403).json({ error: 'CORS denied' });
   }
-  res.status(err?.status || 500).json({ error: err?.message || "server error" });
+  res.status(err?.status || 500).json({ error: err?.message || 'server error' });
 });
 
-// Start
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT} (PORT=${PORT})`);
-});
+// --- Start server ---
+const PORT = process.env.PORT || 5000;
+
+(async function start() {
+  try {
+    if (mongoClient) {
+      const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017';
+      const MONGO_DB = process.env.MONGO_DB || 'railtrans_expo';
+      try {
+        await mongoClient.connect(MONGO_URI, MONGO_DB);
+        console.log('Connected to MongoDB:', MONGO_URI, MONGO_DB);
+      } catch (err) {
+        console.warn('Failed to connect to MongoDB:', err);
+      }
+    }
+
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}`);
+      console.log('Allowed CORS origins:', allowedOrigins.length ? allowedOrigins : 'all (dev)');
+      // Log mounted route availability to help debug 404s
+      console.log('Route status:');
+      console.log(' - /api/visitor-config ->', visitorConfigRouter ? 'mounted' : 'fallback/none');
+      console.log(' - /api/partner-config ->', partnerConfigRouter ? 'mounted' : 'fallback/none');
+      console.log(' - /api/exhibitor-config ->', exhibitorConfigRouter ? 'mounted' : 'fallback/none');
+      console.log(' - /api/speaker-config ->', (speakerConfigMongoRouter || speakerConfigRouter) ? 'mounted' : 'fallback/none');
+      console.log(' - /api/awardee-config ->', awardeeConfigRouter ? 'mounted' : 'fallback/none');
+      if (process.env.REACT_APP_API_BASE_URL) console.log('Front-end API base env:', process.env.REACT_APP_API_BASE_URL);
+    });
+  } catch (e) {
+    console.error('Failed to start server', e && (e.stack || e));
+    process.exit(1);
+  }
+})();
