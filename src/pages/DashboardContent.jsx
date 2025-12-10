@@ -14,10 +14,10 @@ const apiEndpoints = [
   { label: "Awardees", url: "/api/awardees", configUrl: "/api/awardee-config" },
 ];
 const TABLE_KEYS = ["visitors", "exhibitors", "partners", "speakers", "awardees"];
-const HIDDEN_FIELDS = new Set([
-  "ticket_code", "txId", "tx_id", "payment_id", "payment_status", "payment_proof",
-  "proof_path", "ticket_category", "paid", "amount", "provider_payment_id", "payment_txn",
-]);
+
+// DO NOT hide any fields — keep the hidden set empty
+const HIDDEN_FIELDS = new Set([]);
+
 const PAGE_SIZE = 5;
 
 function normalizeData(d) { if (Array.isArray(d)) return d; if (d && typeof d === "object") return [d]; return []; }
@@ -168,6 +168,8 @@ export default function DashboardContent() {
       }
       const frontendBase = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "";
       const bannerUrl = (configs && configs[entity] && Array.isArray(configs[entity].images) && configs[entity].images.length) ? configs[entity].images[0] : "";
+      // include event details from the corresponding registration config (if any)
+      const eventDetails = (configs && configs[entity] && configs[entity].eventDetails) ? configs[entity].eventDetails : (row && row.eventDetails ? row.eventDetails : {});
       const model = {
         frontendBase,
         entity,
@@ -181,6 +183,7 @@ export default function DashboardContent() {
         logoUrl: bannerUrl,
         form: row || null,
         pdfBase64: row?.pdfBase64 || null,
+        event: eventDetails || {},
       };
 
       // build template
@@ -196,7 +199,7 @@ export default function DashboardContent() {
       }
 
       const mailPayload = { to: email, subject, text, html, attachments, logoUrl: bannerUrl };
-      console.debug("[sendTemplatedEmail] mailPayload preview:", { to: mailPayload.to, subject: mailPayload.subject, attachments: (mailPayload.attachments || []).length, logoUrl: mailPayload.logoUrl });
+      console.debug("[sendTemplatedEmail] mailPayload preview:", { to: mailPayload.to, subject: mailPayload.subject, attachments: (mailPayload.attachments || []).length, logoUrl: mailPayload.logoUrl, event: model.event });
 
       const r = await fetch("/api/mailer", { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(mailPayload) });
       const body = await parseErrorBody(r);
@@ -266,11 +269,13 @@ export default function DashboardContent() {
         }
       } catch(e){}
 
+      // ensure workingRow has event details from its registration config
+      workingRow.eventDetails = workingRow.eventDetails || (configs[tableKey] && configs[tableKey].eventDetails) || {};
+
       // send email; pass premium flag so template hides upgrade button
       const mailResult = await sendTemplatedEmail({ entity: tableKey, id: String(id), row: workingRow, premium });
       if (mailResult && mailResult.ok) {
         setActionMsg("Ticket generated and emailed");
-        // clear pendingPremium if matches
         if (pendingPremium && pendingPremium.table === tableKey && String(pendingPremium.id) === String(id)) setPendingPremium(null);
         return { ok: true };
       } else {
@@ -283,7 +288,7 @@ export default function DashboardContent() {
       setActionMsg("Generation failed");
       return { ok: false, error: String(e) };
     }
-  }, [sendTemplatedEmail, pendingPremium]);
+  }, [sendTemplatedEmail, pendingPremium, configs]);
 
   // --- Handlers (create, update, delete, refresh) ---
   const handleEdit = useCallback((table, row) => {
@@ -329,6 +334,9 @@ export default function DashboardContent() {
     setModalColumns(meta);
     const empty = {};
     meta.forEach(m => empty[m.name] = "");
+    // Prefill event details for Add New from the corresponding registration page config (if available)
+    const eventDetails = (configs[key] && configs[key].eventDetails) ? configs[key].eventDetails : {};
+    empty.eventDetails = eventDetails;
     setEditTable(key);
     setEditRow(empty);
     setIsCreating(true);
@@ -398,7 +406,10 @@ export default function DashboardContent() {
       if (!base) { setActionMsg("Unknown table"); return; }
 
       if (isCreating) {
-        const res = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(edited) });
+        // attach eventDetails from registration config (if available) before creating
+        const payload = { ...edited, eventDetails: (configs[editTable] && configs[editTable].eventDetails) ? configs[editTable].eventDetails : (edited.eventDetails || {}) };
+
+        const res = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" }, body: JSON.stringify(payload) });
         const createdRaw = await res.json().catch(() => null);
         if (!res.ok) {
           const body = createdRaw || await parseErrorBody(res);
@@ -429,6 +440,8 @@ export default function DashboardContent() {
           await fetchAll();
           setActionMsg("Created");
         } else {
+          // ensure createdRow has eventDetails from config (so email template receives it)
+          createdRow.eventDetails = createdRow.eventDetails || (configs[editTable] && configs[editTable].eventDetails) || {};
           // insert newRow into report
           setReport(prev => ({ ...prev, [editTable]: [createdRow, ...(prev[editTable] || [])] }));
           // set pending premium for quick generate UI; include premium flag from newIsPremium
@@ -446,7 +459,7 @@ export default function DashboardContent() {
       } else {
         // update path
         let id = edited.id || edited._id;
-        if (!id && edited._id && typeof edited._id === "object") id = edited._id.$oid || edited._id.toString() || "";
+        if (!id && edited._id && typeof edited.__id === "object") id = edited._id.$oid || edited._id.toString() || "";
         if (!id) { setActionMsg("Missing id for update"); return; }
         const res = await fetch(`${base}/${encodeURIComponent(String(id))}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edited) });
         if (!res.ok) {
@@ -472,7 +485,7 @@ export default function DashboardContent() {
         }
       }
     } catch (e) { console.error(e); setActionMsg("Save failed"); } finally { setIsCreating(false); fetchAll(); }
-  }, [editTable, isCreating, fetchAll, parseErrorBody, sendTemplatedEmail, newIsPremium]);
+  }, [editTable, isCreating, fetchAll, parseErrorBody, sendTemplatedEmail, newIsPremium, configs]);
 
   const stats = useMemo(() => ({
     visitors: (report.visitors || []).length,
@@ -574,9 +587,14 @@ export default function DashboardContent() {
                                   {cols.slice(0, 5).map(c => <td key={c} className="px-3 py-3 text-sm text-gray-700 align-top whitespace-pre-wrap break-words">{r[c] ?? ""}</td>)}
                                   <td className="px-3 py-3">
                                     <div className="flex items-center gap-2">
-                                      <button className="px-2 py-1 border rounded text-sm" onClick={() => generateAndEmailTicket({ tableKey: key, row: r, premium: premiumFlag })}>
-                                        {premiumFlag ? "Generate (Premium)" : "Generate"}
-                                      </button>
+                                      {/* Only show Generate button for the row that was just created via Add New (pendingPremium match).
+                                          This avoids showing Generate on every existing row. */}
+                                      {pendingPremium && pendingPremium.table === key && String(pendingPremium.id) === String(canonicalId) ? (
+                                        <button className="px-2 py-1 border rounded text-sm" onClick={() => generateAndEmailTicket({ tableKey: key, row: r, premium: premiumFlag })}>
+                                          {premiumFlag ? "Generate (Premium)" : "Generate"}
+                                        </button>
+                                      ) : null}
+
                                       <ActionsMenu
                                         onEdit={() => handleEdit(label, r)}
                                         onRefresh={() => handleRefreshRow(key, r)}
