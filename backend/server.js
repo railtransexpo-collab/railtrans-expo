@@ -280,7 +280,7 @@ const PORT = process.env.PORT || 5000;
       }
     }
 
-    app.listen(PORT, () => {
+    app.listen(PORT,"0.0.0.0", () => {
       console.log(`Server running at http://localhost:${PORT}`);
       console.log('Allowed CORS origins:', allowedOrigins.length ? allowedOrigins : 'all (dev)');
       // Log mounted route availability to help debug 404s
