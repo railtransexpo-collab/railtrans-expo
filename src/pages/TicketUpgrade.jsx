@@ -7,12 +7,17 @@ import { buildTicketEmail } from "../utils/emailTemplate";
 import { readRegistrationCache, writeRegistrationCache } from "../utils/registrationCache";
 
 /*
- TicketUpgrade.jsx
- - Robust fetch: respects a client-side API base (window.__API_BASE__ or window.__FRONTEND_BASE__)
- - Accepts both "entity" and "type" query params (some links use `type=visitor`)
- - Accepts id or visitorId query params
- - Detects HTML responses (likely the SPA index) and surfaces a clear error suggesting incorrect API base
- - Minor logging to help debug "Visitor not found" issues
+ TicketUpgrade.jsx (manual-payment-only)
+ - The legacy "Pay & Upgrade" button has been removed.
+ - ManualPaymentStep remains and handles the provider checkout or manual proof flow.
+ - ManualPaymentStep must call onTxIdChange(txId) when it receives a provider transaction id
+   and call onProofUpload() when payment is confirmed so this page can finalize the upgrade.
+ - finalizeUpgrade performs the server update and sends a no-attachment email with a frontend
+   download link.
+ - Fix: Apply Upgrade (Free) is only enabled when:
+     * a category is selected
+     * the selected category is different from the visitor's current category
+     * the selected category is free (total === 0)
 */
 
 const LOCAL_PRICE_KEY = "ticket_categories_local_v1";
@@ -46,30 +51,13 @@ async function uploadAsset(file) {
   }
 }
 
-function safeApiBase() {
-  try {
-    const a = (window && (window.__API_BASE__ || window.__FRONTEND_BASE__ || "") ) || "";
-    return String(a).replace(/\/$/, "");
-  } catch (e) {
-    return "";
-  }
-}
-
-function isHtmlResponseText(txt) {
-  if (!txt || typeof txt !== "string") return false;
-  return txt.trim().startsWith("<!doctype") || txt.trim().startsWith("<html");
-}
-
 export default function TicketUpgrade() {
   const [search] = useSearchParams();
   const navigate = useNavigate();
 
-  // Accept both entity and older `type` query param
-  const entity = (search.get("entity") || search.get("type") || "visitors").toString().toLowerCase();
+  const entity = (search.get("entity") || "visitors").toString().toLowerCase();
   const id = search.get("id") || search.get("visitorId") || "";
   const providedTicketCode = search.get("ticket_code") || "";
-
-  const apiBase = safeApiBase();
 
   const [loading, setLoading] = useState(true);
   const [record, setRecord] = useState(null);
@@ -83,11 +71,14 @@ export default function TicketUpgrade() {
   const [manualProofFile, setManualProofFile] = useState(null);
   const [txId, setTxId] = useState("");
 
+  // keep last tx id in a ref to avoid race between setState and finalize call
   const latestTxRef = useRef(null);
 
+  // preferred: load from registration cache, else API
   useEffect(() => {
     let mounted = true;
     async function load() {
+      // allow either id OR ticket_code; error only if both missing
       if (!id && !providedTicketCode) {
         if (mounted) { setError("Missing visitor id or ticket_code in query parameters."); setLoading(false); }
         return;
@@ -124,39 +115,17 @@ export default function TicketUpgrade() {
         }
       }
 
-      // fallback: fetch from API (use apiBase if available)
+      // fallback: fetch from API
       try {
         let js = null;
-        const basePrefix = apiBase || "";
         if (id) {
-          const url = `${basePrefix}/api/visitors/${encodeURIComponent(String(id))}`.replace(/([^:]\/)\/+/g, "$1");
-          const res = await fetch(url);
-          const txt = await res.text().catch(() => "");
-          if (!res.ok) {
-            // If server returned HTML (SPA index) it's likely the API base is wrong / backend not mounted
-            if (isHtmlResponseText(txt)) {
-              const hint = basePrefix ? `Fetch to ${url} returned HTML. Check that your backend is reachable at ${basePrefix} and that /api/visitors/:id exists.` : `Fetch to /api/visitors/${id} returned HTML. Check deployment routing.`;
-              throw new Error(`Visitor fetch returned non-JSON (HTML). ${hint}`);
-            }
-            js = txt ? JSON.parse(txt) : null;
-          } else {
-            // if JSON
-            if (isHtmlResponseText(txt)) {
-              throw new Error(`Visitor fetch returned HTML. Check API base (${basePrefix || '/api'}).`);
-            }
-            try { js = txt ? JSON.parse(txt) : null; } catch (_e) { js = null; }
-          }
+          const res = await fetch(`/api/visitors/${encodeURIComponent(String(id))}`);
+          if (res.ok) js = await res.json().catch(() => null);
         } else if (providedTicketCode) {
-          const where = `ticket_code=${providedTicketCode}`;
-          const url = `${basePrefix}/api/visitors?where=${encodeURIComponent(where)}&limit=1`.replace(/([^:]\/)\/+/g, "$1");
-          const r = await fetch(url);
-          const txt = await r.text().catch(()=>"");
-          if (!r.ok) {
-            if (isHtmlResponseText(txt)) throw new Error(`Visitors list endpoint returned HTML. Check API base: ${basePrefix}`);
-            js = txt ? JSON.parse(txt) : null;
-          } else {
-            if (isHtmlResponseText(txt)) throw new Error(`Visitors list endpoint returned HTML. Check API base: ${basePrefix}`);
-            const arr = txt ? JSON.parse(txt) : [];
+          // fetch by ticket_code using list endpoint (adapt if your backend uses different query)
+          const r = await fetch(`/api/visitors?where=${encodeURIComponent(`ticket_code=${providedTicketCode}`)}&limit=1`);
+          if (r.ok) {
+            const arr = await r.json().catch(() => []);
             js = Array.isArray(arr) ? (arr[0] || null) : arr;
           }
         }
@@ -183,22 +152,21 @@ export default function TicketUpgrade() {
         }
       } catch (e) {
         console.error("load visitor", e);
-        if (mounted) {
-          setError(String(e.message || "Failed to load visitor. Check API base and that backend routes are reachable."));
-        }
+        if (mounted) setError("Failed to load visitor.");
       } finally {
         if (mounted) setLoading(false);
       }
     }
     load();
     return () => { mounted = false; };
-  }, [entity, id, providedTicketCode, apiBase]);
+  }, [entity, id, providedTicketCode]);
 
   const onCategoryChange = useCallback((val, meta) => {
     setSelectedCategory(val);
     setSelectedMeta(meta || { price: 0, gstRate: 0, gstAmount: 0, total: 0, label: val });
   }, []);
 
+  // Derived flags: whether selected category is free and whether it's different from current
   const isSelectedFree = useMemo(() => {
     const t = Number(selectedMeta.total || selectedMeta.price || 0);
     return !t || t === 0;
@@ -206,32 +174,33 @@ export default function TicketUpgrade() {
 
   const currentCategory = (record && (record.ticket_category || record.category || record.ticketCategory)) || "";
   const isSameCategory = useMemo(() => {
-    if (!selectedCategory) return true;
+    if (!selectedCategory) return true; // treat no selection as same to prevent action
     return String(selectedCategory).toLowerCase() === String(currentCategory).toLowerCase();
   }, [selectedCategory, currentCategory]);
 
+  // Minimal finalizeUpgrade: update server, update local cache, notify UI
   const finalizeUpgrade = useCallback(async ({ method = "online", txId: tx = null, reference = null, proofUrl = null } = {}) => {
     setProcessing(true);
     setError("");
     setMessage("");
     try {
+      // determine best target id (use id from query or record)
       const targetId = id || (record && (record.id || record._id || record.insertedId)) || "";
       const upgradePayload = { newCategory: selectedCategory, txId: tx, reference, proofUrl, amount: selectedMeta.total || selectedMeta.price || 0 };
 
-      const basePrefix = apiBase || "";
       let res = null;
+      // If we have a numeric/identifier targetId, try the dedicated endpoint
       if (targetId) {
-        const url = `${basePrefix}/api/visitors/${encodeURIComponent(String(targetId))}/upgrade`.replace(/([^:]\/)\/+/g, "$1");
-        res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(upgradePayload) }).catch(()=>null);
+        res = await fetch(`/api/visitors/${encodeURIComponent(String(targetId))}/upgrade`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(upgradePayload) }).catch(()=>null);
       }
 
+      // fallback to a PUT by id (if targetId available) or POST to a search/upgrade endpoint if your backend supports it
       if (!res || !res.ok) {
         if (targetId) {
-          const url = `${basePrefix}/api/visitors/${encodeURIComponent(String(targetId))}`.replace(/([^:]\/)\/+/g, "$1");
-          res = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket_category: selectedCategory, txId: tx, payment_reference: reference, payment_proof_url: proofUrl }) }).catch(()=>null);
+          res = await fetch(`/api/visitors/${encodeURIComponent(String(targetId))}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket_category: selectedCategory, txId: tx, payment_reference: reference, payment_proof_url: proofUrl }) }).catch(()=>null);
         } else {
-          const url = `${basePrefix}/api/visitors/upgrade-by-code`.replace(/([^:]\/)\/+/g, "$1");
-          res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket_code: providedTicketCode, ticket_category: selectedCategory, txId: tx, reference, proofUrl }) }).catch(()=>null);
+          // As last resort, try a POST to upgrade-by-ticket-code endpoint if available
+          res = await fetch(`/api/visitors/upgrade-by-code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket_code: providedTicketCode, ticket_category: selectedCategory, txId: tx, reference, proofUrl }) }).catch(()=>null);
         }
       }
 
@@ -242,15 +211,14 @@ export default function TicketUpgrade() {
         return null;
       }
 
+      // fetch fresh record if possible
       let updated = null;
       try {
         if (targetId) {
-          const url = `${basePrefix}/api/visitors/${encodeURIComponent(String(targetId))}`.replace(/([^:]\/)\/+/g, "$1");
-          const r = await fetch(url);
+          const r = await fetch(`/api/visitors/${encodeURIComponent(String(targetId))}`);
           if (r.ok) updated = await r.json().catch(()=>null);
         } else if (providedTicketCode) {
-          const url = `${basePrefix}/api/visitors?where=${encodeURIComponent(`ticket_code=${providedTicketCode}`)}&limit=1`.replace(/([^:]\/)\/+/g, "$1");
-          const r = await fetch(url);
+          const r = await fetch(`/api/visitors?where=${encodeURIComponent(`ticket_code=${providedTicketCode}`)}&limit=1`);
           if (r.ok) {
             const arr = await r.json().catch(()=>[]);
             updated = Array.isArray(arr) ? (arr[0] || null) : arr;
@@ -260,11 +228,13 @@ export default function TicketUpgrade() {
 
       const finalRecord = updated || { ...(record || {}), ticket_category: selectedCategory, ticket_code: (record && (record.ticket_code || record.ticketCode)) || providedTicketCode || "" };
 
+      // write updated record to cache and notify
       try {
         const cacheId = targetId || finalRecord.id || finalRecord._id || finalRecord.insertedId || providedTicketCode || "";
         if (cacheId) writeRegistrationCache("visitors", cacheId, finalRecord);
       } catch (e) { /* ignore */ }
 
+      // build/send a simple notification email WITHOUT attachments (optional, best-effort)
       try {
         const frontendBase = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "";
         const bannerUrl = (readLocalPricing() && readLocalPricing().bannerUrl) || "";
@@ -283,9 +253,11 @@ export default function TicketUpgrade() {
         };
         const { subject, text, html } = buildTicketEmail(emailModel);
         const mailPayload = { to: finalRecord?.email, subject, text, html, attachments: [] };
-        await fetch(`${apiBase || ""}/api/mailer`.replace(/([^:]\/)\/+/g, "$1"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(mailPayload) }).catch(()=>null);
+        // best-effort send (no attachments)
+        await fetch("/api/mailer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(mailPayload) }).catch(()=>null);
       } catch (e) { console.warn("mail send failed (no attachments)", e); }
 
+      // update UI state and finish
       setRecord(finalRecord);
       setMessage("Upgrade successful — row updated. Check your inbox for details (no attachments).");
       setProcessing(false);
@@ -296,14 +268,16 @@ export default function TicketUpgrade() {
       setProcessing(false);
       return null;
     }
-  }, [selectedCategory, selectedMeta, id, record, providedTicketCode, apiBase]);
+  }, [selectedCategory, selectedMeta, id, record, providedTicketCode]);
 
+  // ManualPaymentStep handlers
   const handleTxIdChange = useCallback((value) => {
     setTxId(value || "");
     latestTxRef.current = value || "";
   }, []);
 
   const handlePaymentConfirmed = useCallback(() => {
+    // ManualPaymentStep will call onTxIdChange first, then onProofUpload => use latestTxRef
     const tx = latestTxRef.current || txId || null;
     finalizeUpgrade({ method: "online", txId: tx || null }).catch((e) => {
       console.error("finalizeUpgrade after manual payment failed", e);
@@ -342,16 +316,16 @@ export default function TicketUpgrade() {
     setError("");
     try {
       const targetId = id || (record && (record.id || record._id || ""));
-      const basePrefix = apiBase || "";
-      const res = targetId ? await fetch(`${basePrefix}/api/visitors/${encodeURIComponent(String(targetId))}/cancel`.replace(/([^:]\/)\/+/g, "$1"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "Cancelled via upgrade page" }) }).catch(()=>null) : null;
+      const res = targetId ? await fetch(`/api/visitors/${encodeURIComponent(String(targetId))}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "Cancelled via upgrade page" }) }).catch(()=>null) : null;
       if (!res || !res.ok) {
-        const r2 = targetId ? await fetch(`${basePrefix}/api/visitors/${encodeURIComponent(String(targetId))}`.replace(/([^:]\/)\/+/g, "$1"), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "cancelled" }) }).catch(()=>null) : null;
+        const r2 = targetId ? await fetch(`/api/visitors/${encodeURIComponent(String(targetId))}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "cancelled" }) }).catch(()=>null) : null;
         if (!r2 || !r2.ok) {
           setError("Cancel failed");
           setProcessing(false);
           return;
         }
       }
+      // update cache and notify
       const cancelledRecord = { ...(record || {}), status: "cancelled" };
       const cacheId = id || (record && (record.id || record._id || "")) || providedTicketCode || "";
       if (cacheId) writeRegistrationCache("visitors", cacheId, cancelledRecord);
@@ -362,13 +336,18 @@ export default function TicketUpgrade() {
       setError("Cancel failed");
       setProcessing(false);
     }
-  }, [id, record, providedTicketCode, apiBase]);
+  }, [id, record, providedTicketCode]);
 
   const availableCategories = useMemo(() => {
     const local = readLocalPricing();
     return local && local.visitors ? local.visitors : null;
   }, [record]);
 
+  // Apply (Free) button enabled/disabled logic:
+  // Enabled when:
+  //  - a category is selected (selectedCategory truthy)
+  //  - selected category is free (isSelectedFree === true)
+  //  - selected category is different from currentCategory (not isSameCategory)
   const canApplyFree = useMemo(() => {
     if (processing) return false;
     if (!selectedCategory) return false;
@@ -420,6 +399,7 @@ export default function TicketUpgrade() {
             <div className="mb-6">
               {selectedMeta.total && Number(selectedMeta.total) > 0 ? (
                 <>
+                  {/* ManualPaymentStep is the single payment UI now */}
                   <div className="mb-3">
                     <span className="text-sm text-gray-500">Use the manual payment section below (you may also open provider checkout from there).</span>
                   </div>
@@ -427,8 +407,8 @@ export default function TicketUpgrade() {
                   <ManualPaymentStep
                     ticketType={selectedCategory}
                     ticketPrice={selectedMeta.total}
-                    onProofUpload={handlePaymentConfirmed}
-                    onTxIdChange={handleTxIdChange}
+                    onProofUpload={handlePaymentConfirmed}    // called by ManualPaymentStep after provider confirms
+                    onTxIdChange={handleTxIdChange}            // called by ManualPaymentStep with provider tx id
                     txId={txId}
                     proofFile={manualProofFile}
                     setProofFile={setManualProofFile}
@@ -466,7 +446,7 @@ export default function TicketUpgrade() {
             </div>
 
             <div className="flex gap-3 items-center">
-              <a href={`${(window.__FRONTEND_BASE__ || window.location.origin)}/ticket-download?entity=visitors&id=${encodeURIComponent(String(record.id || id || providedTicketCode || ""))}`} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 underline">
+              <a href={`${window.__FRONTEND_BASE__ || window.location.origin}/ticket-download?entity=visitors&id=${encodeURIComponent(String(record.id || id || providedTicketCode || ""))}`} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 underline">
                 Open frontend download page
               </a>
             </div>

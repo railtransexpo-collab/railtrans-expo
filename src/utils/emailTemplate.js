@@ -19,14 +19,14 @@ function getEnvFrontendBase() {
   try {
     // Prefer explicit env var for public frontend base
     if (typeof process !== "undefined" && process.env) {
-      const env = process.env.REACT_APP_API_BASE_URL || process.env.PUBLIC_BASE_URL || process.env.API_BASE || "";
+      const env = process.env.FRONTEND_BASE || process.env.API_BASE || "";
       if (env && String(env).trim()) return String(env).replace(/\/$/, "");
     }
   } catch (e) {}
   try {
     // Runtime override in browser
-    if (typeof window !== "undefined" && window.__PUBLIC_BASE__) {
-      return String(window.__PUBLIC_BASE__).replace(/\/$/, "");
+    if (typeof window !== "undefined" && window.__FRONTEND_BASE__) {
+      return String(window.__FRONTEND_BASE__).replace(/\/$/, "");
     }
   } catch (e) {}
   return "";
