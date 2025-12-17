@@ -6,55 +6,85 @@ import VisitorTicket from "../components/VisitorTicket";
 import { buildTicketEmail } from "../utils/emailTemplate";
 import { readRegistrationCache, writeRegistrationCache } from "../utils/registrationCache";
 
-/*
- TicketUpgrade.jsx (manual-payment-only)
- - Uses unified backend upgrade endpoint: POST /api/tickets/upgrade
- - ManualPaymentStep must call onTxIdChange(txId) when provider returns tx id
-   and call onProofUpload() when payment is confirmed so this page can finalize the upgrade.
- - finalizeUpgrade performs the server update and sends a no-attachment email with a frontend
-   download link.
- - Free upgrade enabled only when:
-     * a category is selected
-     * selected category is different from current
-     * selected category is free (total === 0)
-*/
+/* Config / env helpers */
+const RAW_API_BASE = (typeof window !== "undefined" && (window.__API_BASE__ || "")) || (process.env.REACT_APP_API_BASE || process.env.API_BASE || process.env.BACKEND_URL || "");
+const API_BASE = String(RAW_API_BASE || "").replace(/\/$/, "");
 
-const LOCAL_PRICE_KEY = "ticket_categories_local_v1";
+const RAW_FRONTEND_BASE = (typeof window !== "undefined" && (window.__FRONTEND_BASE__ || "")) || (process.env.REACT_APP_FRONTEND_BASE || process.env.FRONTEND_BASE || process.env.APP_URL || "");
+const FRONTEND_BASE = String(RAW_FRONTEND_BASE || window.location?.origin || "http://localhost:3000").replace(/\/$/, "");
 
-function readLocalPricing() {
-  try {
-    const raw = localStorage.getItem(LOCAL_PRICE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+function buildApiUrl(path) {
+  if (!path) return API_BASE || path;
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith("/")) return `${API_BASE}${path}`;
+  return `${API_BASE}/${path}`;
 }
 
-async function uploadAsset(file) {
-  if (!file) return "";
-  try {
-    const fd = new FormData();
-    fd.append("file", file);
-    const r = await fetch("/api/upload-asset", { method: "POST", body: fd });
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      console.warn("uploadAsset failed", txt);
-      return "";
+async function safeJsonResponse(res) {
+  if (!res) return null;
+  const ct = (res.headers && typeof res.headers.get === "function") ? (res.headers.get("content-type") || "") : "";
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    // include snippet for diagnostics
+    const snippet = text ? text.slice(0, 1000) : "";
+    throw new Error(`HTTP ${res.status} ${res.statusText || ""} - ${snippet}`);
+  }
+  if (ct.toLowerCase().includes("application/json")) {
+    try { return JSON.parse(text); } catch (e) { throw new Error("Invalid JSON response"); }
+  }
+  // Try JSON.parse anyway if the server incorrectly sets content-type
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+/* utils: try fetch with multiple candidate urls */
+async function tryFetchCandidates(pathVariants = []) {
+  // pathVariants: array of full URLs or relative paths
+  for (const url of pathVariants) {
+    try {
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const ct = (res && res.headers && typeof res.headers.get === "function") ? (res.headers.get("content-type") || "") : "";
+      if (!res.ok) {
+        // if 404 try next
+        if (res.status === 404) continue;
+        // otherwise throw — caller may catch
+        const text = await res.text().catch(() => "");
+        throw new Error(`Request ${url} failed ${res.status} - ${text.slice(0, 400)}`);
+      }
+      if (!ct.toLowerCase().includes("application/json")) {
+        // if it's HTML or other, skip this candidate (likely index.html)
+        const txt = await res.text().catch(() => "");
+        // skip and continue
+        continue;
+      }
+      const js = await res.json().catch(() => null);
+      if (js !== null) return js;
+    } catch (e) {
+      // continue to next candidate
+      continue;
     }
-    const js = await r.json().catch(() => null);
-    return js?.imageUrl || js?.fileUrl || js?.url || js?.path || "";
-  } catch (e) {
-    console.warn("uploadAsset error", e);
-    return "";
   }
+  return null;
 }
 
+function qCandidatesForVisitors(q) {
+  const rel = `/api/visitors?q=${encodeURIComponent(q)}&limit=1`;
+  const abs = buildApiUrl(`/api/visitors?q=${encodeURIComponent(q)}&limit=1`);
+  return [rel, abs];
+}
+
+function idCandidatesForVisitors(id) {
+  const rel = `/api/visitors/${encodeURIComponent(String(id))}`;
+  const abs = buildApiUrl(`/api/visitors/${encodeURIComponent(String(id))}`);
+  return [rel, abs];
+}
+
+/* ---------- TicketUpgrade component (robust) ---------- */
 export default function TicketUpgrade() {
   const [search] = useSearchParams();
   const navigate = useNavigate();
 
-  const entity = (search.get("entity") || "visitors").toString().toLowerCase();
+  // Accept entity OR legacy "type"
+  const entity = (search.get("entity") || search.get("type") || "visitors").toString().toLowerCase();
   const id = search.get("id") || search.get("visitorId") || "";
   const providedTicketCode = search.get("ticket_code") || search.get("ticket") || "";
 
@@ -69,64 +99,83 @@ export default function TicketUpgrade() {
   const [processing, setProcessing] = useState(false);
   const [manualProofFile, setManualProofFile] = useState(null);
   const [txId, setTxId] = useState("");
-
-  // keep last tx id in a ref to avoid race between setState and finalize call
   const latestTxRef = useRef(null);
 
-  // preferred: load from registration cache, else API
+  // Load visitor: try cache, then robust fetch by id, then try q= (ticket code)
   useEffect(() => {
     let mounted = true;
     async function load() {
-      // allow either id OR ticket_code; error only if both missing
       if (!id && !providedTicketCode) {
         if (mounted) { setError("Missing visitor id or ticket_code in query parameters."); setLoading(false); }
         return;
       }
-
       setLoading(true);
       setError("");
-
       if (entity !== "visitors") {
         setError("Ticket upgrade page is for visitors only.");
         setLoading(false);
         return;
       }
 
-      // try cache (only if id present)
+      // cache first (only when id present)
       if (id) {
-        const cached = readRegistrationCache(entity, id);
-        if (cached) {
-          if (!mounted) return;
-          setRecord(cached);
-          const cur = cached.ticket_category || cached.category || cached.ticketCategory || "";
-          setSelectedCategory(cur || "");
-          const localPricing = readLocalPricing();
-          if (cur && localPricing && localPricing.visitors) {
-            const found = localPricing.visitors.find(c => String(c.value).toLowerCase() === String(cur).toLowerCase());
-            if (found) {
-              const price = Number(found.price || 0);
-              const gst = Number(found.gst || 0);
-              if (mounted) setSelectedMeta({ price, gstRate: gst, gstAmount: Math.round(price * gst), total: Math.round(price + price * gst), label: found.label || found.value });
+        try {
+          const cached = readRegistrationCache(entity, id);
+          if (cached) {
+            if (!mounted) return;
+            setRecord(cached);
+            const cur = cached.ticket_category || cached.category || cached.ticketCategory || "";
+            setSelectedCategory(cur || "");
+            const localPricing = readLocalPricing();
+            if (cur && localPricing && localPricing.visitors) {
+              const found = localPricing.visitors.find(c => String(c.value).toLowerCase() === String(cur).toLowerCase());
+              if (found && mounted) {
+                const price = Number(found.price || 0);
+                const gst = Number(found.gst || 0);
+                setSelectedMeta({ price, gstRate: gst, gstAmount: Math.round(price * gst), total: Math.round(price + price * gst), label: found.label || found.value });
+              }
             }
+            setLoading(false);
+            return;
           }
-          setLoading(false);
-          return;
+        } catch (e) {
+          // ignore cache errors
         }
       }
 
-      // fallback: fetch from API
+      // robust fetch attempts
       try {
         let js = null;
+
+        // If id present, try fetch by id (relative first, then API_BASE absolute)
         if (id) {
-          const res = await fetch(`/api/visitors/${encodeURIComponent(String(id))}`);
-          if (res.ok) js = await res.json().catch(() => null);
-        } else if (providedTicketCode) {
-          // fetch by ticket_code using list endpoint — backend expects `q` parameter
-          const r = await fetch(`/api/visitors?q=${encodeURIComponent(providedTicketCode)}&limit=1`);
-          if (r.ok) {
-            const arr = await r.json().catch(() => []);
-            js = Array.isArray(arr) ? (arr[0] || null) : arr;
+          const candidates = idCandidatesForVisitors(id);
+          js = await tryFetchCandidates(candidates);
+          // If response is an array/list or wrapper, normalize
+          if (!js) {
+            // treat id as possible ticket_code fallback and try q=
+            js = await tryFetchCandidates(qCandidatesForVisitors(id));
+            if (Array.isArray(js)) js = js[0] || null;
+            if (js && Array.isArray(js.rows)) js = js.rows[0] || null;
           }
+        }
+
+        // If still nothing and providedTicketCode present, try q= search
+        if (!js && providedTicketCode) {
+          const arr = await tryFetchCandidates(qCandidatesForVisitors(providedTicketCode));
+          if (Array.isArray(arr)) js = arr[0] || null;
+          else js = arr;
+        }
+
+        // If still nothing, fall back to older list endpoint (relative)
+        if (!js && providedTicketCode) {
+          try {
+            const r = await fetch(`/api/visitors?q=${encodeURIComponent(providedTicketCode)}&limit=1`, { headers: { Accept: "application/json" } });
+            if (r.ok) {
+              const arr2 = await r.json().catch(() => null);
+              if (Array.isArray(arr2)) js = arr2[0] || null;
+            }
+          } catch (e) {}
         }
 
         if (!js) {
@@ -135,17 +184,23 @@ export default function TicketUpgrade() {
           return;
         }
 
-        if (mounted) setRecord(js);
-        const cur = js.ticket_category || js.category || js.ticketCategory || "";
-        if (mounted) setSelectedCategory(cur || "");
-        if (cur) {
-          const localPricing = readLocalPricing();
-          if (localPricing && localPricing.visitors) {
-            const found = localPricing.visitors.find(c => String(c.value).toLowerCase() === String(cur).toLowerCase());
-            if (found && mounted) {
-              const price = Number(found.price || 0);
-              const gst = Number(found.gst || 0);
-              setSelectedMeta({ price, gstRate: gst, gstAmount: Math.round(price * gst), total: Math.round(price + price * gst), label: found.label || found.value });
+        // Normalize possible wrapper shapes (some APIs return { data: {...} } or { success:true, data: {...} })
+        if (js && js.data && (typeof js.data === "object")) js = js.data;
+        if (Array.isArray(js)) js = js[0] || null;
+
+        if (mounted) {
+          setRecord(js);
+          const cur = js.ticket_category || js.category || js.ticketCategory || "";
+          setSelectedCategory(cur || "");
+          if (cur) {
+            const localPricing = readLocalPricing();
+            if (localPricing && localPricing.visitors) {
+              const found = localPricing.visitors.find(c => String(c.value).toLowerCase() === String(cur).toLowerCase());
+              if (found) {
+                const price = Number(found.price || 0);
+                const gst = Number(found.gst || 0);
+                setSelectedMeta({ price, gstRate: gst, gstAmount: Math.round(price * gst), total: Math.round(price + price * gst), label: found.label || found.value });
+              }
             }
           }
         }
@@ -156,6 +211,7 @@ export default function TicketUpgrade() {
         if (mounted) setLoading(false);
       }
     }
+
     load();
     return () => { mounted = false; };
   }, [entity, id, providedTicketCode]);
@@ -165,25 +221,22 @@ export default function TicketUpgrade() {
     setSelectedMeta(meta || { price: 0, gstRate: 0, gstAmount: 0, total: 0, label: val });
   }, []);
 
-  // Derived flags: whether selected category is free and whether it's different from current
   const isSelectedFree = useMemo(() => {
     const t = Number(selectedMeta.total || selectedMeta.price || 0);
     return !t || t === 0;
   }, [selectedMeta]);
-
   const currentCategory = (record && (record.ticket_category || record.category || record.ticketCategory)) || "";
   const isSameCategory = useMemo(() => {
-    if (!selectedCategory) return true; // treat no selection as same to prevent action
+    if (!selectedCategory) return true;
     return String(selectedCategory).toLowerCase() === String(currentCategory).toLowerCase();
   }, [selectedCategory, currentCategory]);
 
-  // Minimal finalizeUpgrade: update server, update local cache, notify UI
+  // finalizeUpgrade: call backend then refresh and send email (await buildTicketEmail)
   const finalizeUpgrade = useCallback(async ({ method = "online", txId: tx = null, reference = null, proofUrl = null } = {}) => {
     setProcessing(true);
     setError("");
     setMessage("");
     try {
-      // determine best target id (use id from query or record)
       const targetId = id || (record && (record.id || record._id || record.insertedId)) || "";
       const payload = {
         entity_type: "visitors",
@@ -191,14 +244,12 @@ export default function TicketUpgrade() {
         new_category: selectedCategory,
         amount: selectedMeta.total || selectedMeta.price || 0,
         email: record?.email || null,
-        // include payment/proof details for manual flow
         txId: tx,
         reference,
         proofUrl,
-        method // informational
+        method
       };
 
-      // Call unified upgrade endpoint
       const res = await fetch("/api/tickets/upgrade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -214,37 +265,37 @@ export default function TicketUpgrade() {
 
       const js = await res.json().catch(() => ({}));
 
-      // try to fetch fresh visitor record if we have a numeric ID
+      // Try to fetch refreshed visitor (use same robust candidate strategy)
       let updated = null;
       try {
         if (targetId) {
-          const r = await fetch(`/api/visitors/${encodeURIComponent(String(targetId))}`);
-          if (r.ok) updated = await r.json().catch(() => null);
-        } else if (providedTicketCode) {
-          // backend expects `q` param for searching by ticket_code
-          const r = await fetch(`/api/visitors?q=${encodeURIComponent(providedTicketCode)}&limit=1`);
-          if (r.ok) {
-            const arr = await r.json().catch(() => []);
-            updated = Array.isArray(arr) ? (arr[0] || null) : arr;
-          }
+          const candidates = idCandidatesForVisitors(targetId);
+          const result = await tryFetchCandidates(candidates);
+          updated = result || null;
+        }
+        if (!updated && providedTicketCode) {
+          const result = await tryFetchCandidates(qCandidatesForVisitors(providedTicketCode));
+          if (Array.isArray(result)) updated = result[0] || null;
+          else updated = result;
         }
       } catch (e) { /* ignore */ }
 
-      // Determine final record: prefer updated from visitors API, else merge
+      // Normalize wrapper shapes
+      if (updated && updated.data) updated = updated.data;
+      if (Array.isArray(updated)) updated = updated[0] || null;
+
       const finalRecord = updated || { ...(record || {}), ticket_category: selectedCategory, ticket_code: (js.ticket_code || record && (record.ticket_code || record.ticketCode) || providedTicketCode) };
 
-      // cache the updated record
       try {
         const cacheId = targetId || finalRecord.id || finalRecord._id || finalRecord.insertedId || providedTicketCode || "";
         if (cacheId) writeRegistrationCache("visitors", cacheId, finalRecord);
-      } catch (e) { /* ignore */ }
+      } catch (e) {}
 
-      // build/send a simple notification email WITHOUT attachments (optional, best-effort)
+      // build/send email: await buildTicketEmail
       try {
-        const frontendBase = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "";
         const bannerUrl = (readLocalPricing() && readLocalPricing().bannerUrl) || "";
         const emailModel = {
-          frontendBase,
+          frontendBase: FRONTEND_BASE,
           entity: "visitors",
           id: targetId || providedTicketCode || "",
           name: finalRecord?.name || "",
@@ -253,19 +304,19 @@ export default function TicketUpgrade() {
           ticket_category: selectedCategory,
           bannerUrl,
           badgePreviewUrl: "",
-          downloadUrl: `${frontendBase}/ticket-download?entity=visitors&id=${encodeURIComponent(String(targetId || ""))}`,
-          event: (finalRecord && finalRecord.event) || {}
+          downloadUrl: `${FRONTEND_BASE}/ticket-download?entity=visitors&id=${encodeURIComponent(String(targetId || ""))}`,
+          event: (finalRecord && finalRecord.event) || null
         };
-        const { subject, text, html } = buildTicketEmail(emailModel);
+        // IMPORTANT: await the async email builder
+        const tpl = await buildTicketEmail(emailModel);
+        const { subject, text, html } = tpl;
         const mailPayload = { to: finalRecord?.email, subject, text, html, attachments: [] };
-        // best-effort send (no attachments)
         await fetch("/api/mailer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(mailPayload) }).catch(()=>null);
-      } catch (e) { console.warn("mail send failed (no attachments)", e); }
+      } catch (e) {
+        console.warn("mail send failed (no attachments)", e);
+      }
 
-      // Clear manual proof file after successful upgrade
       setManualProofFile(null);
-
-      // update UI state and finish
       setRecord(finalRecord);
       setMessage("Upgrade successful — row updated. Check your inbox for details (no attachments).");
       setProcessing(false);
@@ -278,14 +329,12 @@ export default function TicketUpgrade() {
     }
   }, [selectedCategory, selectedMeta, id, record, providedTicketCode]);
 
-  // ManualPaymentStep handlers
   const handleTxIdChange = useCallback((value) => {
     setTxId(value || "");
     latestTxRef.current = value || "";
   }, []);
 
   const handlePaymentConfirmed = useCallback(() => {
-    // ManualPaymentStep will call onTxIdChange first, then onProofUpload => use latestTxRef
     const tx = latestTxRef.current || txId || null;
     finalizeUpgrade({ method: "online", txId: tx || null }).catch((e) => {
       console.error("finalizeUpgrade after manual payment failed", e);
@@ -333,7 +382,6 @@ export default function TicketUpgrade() {
           return;
         }
       }
-      // update cache and notify
       const cancelledRecord = { ...(record || {}), status: "cancelled" };
       const cacheId = id || (record && (record.id || record._id || "")) || providedTicketCode || "";
       if (cacheId) writeRegistrationCache("visitors", cacheId, cancelledRecord);
@@ -351,11 +399,6 @@ export default function TicketUpgrade() {
     return local && local.visitors ? local.visitors : null;
   }, [record]);
 
-  // Apply (Free) button enabled/disabled logic:
-  // Enabled when:
-  //  - a category is selected (selectedCategory truthy)
-  //  - selected category is free (isSelectedFree === true)
-  //  - selected category is different from currentCategory (not isSameCategory)
   const canApplyFree = useMemo(() => {
     if (processing) return false;
     if (!selectedCategory) return false;
@@ -407,7 +450,6 @@ export default function TicketUpgrade() {
             <div className="mb-6">
               {selectedMeta.total && Number(selectedMeta.total) > 0 ? (
                 <>
-                  {/* ManualPaymentStep is the single payment UI now */}
                   <div className="mb-3">
                     <span className="text-sm text-gray-500">Use the manual payment section below (you may also open provider checkout from there).</span>
                   </div>
@@ -415,8 +457,8 @@ export default function TicketUpgrade() {
                   <ManualPaymentStep
                     ticketType={selectedCategory}
                     ticketPrice={selectedMeta.total}
-                    onProofUpload={handlePaymentConfirmed}    // called by ManualPaymentStep after provider confirms
-                    onTxIdChange={handleTxIdChange}            // called by ManualPaymentStep with provider tx id
+                    onProofUpload={handlePaymentConfirmed}
+                    onTxIdChange={handleTxIdChange}
                     txId={txId}
                     proofFile={manualProofFile}
                     setProofFile={setManualProofFile}
@@ -454,7 +496,7 @@ export default function TicketUpgrade() {
             </div>
 
             <div className="flex gap-3 items-center">
-              <a href={`${window.__FRONTEND_BASE__ || window.location.origin}/ticket-download?entity=visitors&id=${encodeURIComponent(String(record.id || id || providedTicketCode || ""))}`} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 underline">
+              <a href={`${FRONTEND_BASE}/ticket-download?entity=visitors&id=${encodeURIComponent(String(record.id || id || providedTicketCode || ""))}`} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 underline">
                 Open frontend download page
               </a>
             </div>
