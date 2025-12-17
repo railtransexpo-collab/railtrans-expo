@@ -6,7 +6,42 @@ import VisitorTicket from "../components/VisitorTicket";
 import { buildTicketEmail } from "../utils/emailTemplate";
 import { readRegistrationCache, writeRegistrationCache } from "../utils/registrationCache";
 
-/* Config / env helpers */
+/* ---------- helper functions (added to fix build errors) ---------- */
+
+// Local price cache key and reader (used by the component)
+const LOCAL_PRICE_KEY = "ticket_categories_local_v1";
+function readLocalPricing() {
+  try {
+    const raw = localStorage.getItem(LOCAL_PRICE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// uploadAsset helper used for manual proof uploads
+async function uploadAsset(file) {
+  if (!file) return "";
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch("/api/upload-asset", { method: "POST", body: fd });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      console.warn("uploadAsset failed", txt);
+      return "";
+    }
+    const js = await r.json().catch(() => null);
+    return js?.imageUrl || js?.fileUrl || js?.url || js?.path || "";
+  } catch (e) {
+    console.warn("uploadAsset error", e);
+    return "";
+  }
+}
+
+/* ---------- main TicketUpgrade component ---------- */
+
 const RAW_API_BASE = (typeof window !== "undefined" && (window.__API_BASE__ || "")) || (process.env.REACT_APP_API_BASE || process.env.API_BASE || process.env.BACKEND_URL || "");
 const API_BASE = String(RAW_API_BASE || "").replace(/\/$/, "");
 
@@ -20,46 +55,23 @@ function buildApiUrl(path) {
   return `${API_BASE}/${path}`;
 }
 
-async function safeJsonResponse(res) {
-  if (!res) return null;
-  const ct = (res.headers && typeof res.headers.get === "function") ? (res.headers.get("content-type") || "") : "";
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    // include snippet for diagnostics
-    const snippet = text ? text.slice(0, 1000) : "";
-    throw new Error(`HTTP ${res.status} ${res.statusText || ""} - ${snippet}`);
-  }
-  if (ct.toLowerCase().includes("application/json")) {
-    try { return JSON.parse(text); } catch (e) { throw new Error("Invalid JSON response"); }
-  }
-  // Try JSON.parse anyway if the server incorrectly sets content-type
-  try { return JSON.parse(text); } catch { return null; }
-}
-
-/* utils: try fetch with multiple candidate urls */
 async function tryFetchCandidates(pathVariants = []) {
-  // pathVariants: array of full URLs or relative paths
   for (const url of pathVariants) {
     try {
       const res = await fetch(url, { headers: { Accept: "application/json" } });
       const ct = (res && res.headers && typeof res.headers.get === "function") ? (res.headers.get("content-type") || "") : "";
       if (!res.ok) {
-        // if 404 try next
         if (res.status === 404) continue;
-        // otherwise throw — caller may catch
         const text = await res.text().catch(() => "");
         throw new Error(`Request ${url} failed ${res.status} - ${text.slice(0, 400)}`);
       }
       if (!ct.toLowerCase().includes("application/json")) {
-        // if it's HTML or other, skip this candidate (likely index.html)
-        const txt = await res.text().catch(() => "");
-        // skip and continue
+        // likely index.html or non-json; skip
         continue;
       }
       const js = await res.json().catch(() => null);
       if (js !== null) return js;
     } catch (e) {
-      // continue to next candidate
       continue;
     }
   }
@@ -78,12 +90,10 @@ function idCandidatesForVisitors(id) {
   return [rel, abs];
 }
 
-/* ---------- TicketUpgrade component (robust) ---------- */
 export default function TicketUpgrade() {
   const [search] = useSearchParams();
   const navigate = useNavigate();
 
-  // Accept entity OR legacy "type"
   const entity = (search.get("entity") || search.get("type") || "visitors").toString().toLowerCase();
   const id = search.get("id") || search.get("visitorId") || "";
   const providedTicketCode = search.get("ticket_code") || search.get("ticket") || "";
@@ -101,7 +111,6 @@ export default function TicketUpgrade() {
   const [txId, setTxId] = useState("");
   const latestTxRef = useRef(null);
 
-  // Load visitor: try cache, then robust fetch by id, then try q= (ticket code)
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -117,7 +126,6 @@ export default function TicketUpgrade() {
         return;
       }
 
-      // cache first (only when id present)
       if (id) {
         try {
           const cached = readRegistrationCache(entity, id);
@@ -143,48 +151,27 @@ export default function TicketUpgrade() {
         }
       }
 
-      // robust fetch attempts
       try {
         let js = null;
-
-        // If id present, try fetch by id (relative first, then API_BASE absolute)
         if (id) {
           const candidates = idCandidatesForVisitors(id);
           js = await tryFetchCandidates(candidates);
-          // If response is an array/list or wrapper, normalize
           if (!js) {
-            // treat id as possible ticket_code fallback and try q=
             js = await tryFetchCandidates(qCandidatesForVisitors(id));
             if (Array.isArray(js)) js = js[0] || null;
             if (js && Array.isArray(js.rows)) js = js.rows[0] || null;
           }
         }
-
-        // If still nothing and providedTicketCode present, try q= search
         if (!js && providedTicketCode) {
           const arr = await tryFetchCandidates(qCandidatesForVisitors(providedTicketCode));
           if (Array.isArray(arr)) js = arr[0] || null;
           else js = arr;
         }
-
-        // If still nothing, fall back to older list endpoint (relative)
-        if (!js && providedTicketCode) {
-          try {
-            const r = await fetch(`/api/visitors?q=${encodeURIComponent(providedTicketCode)}&limit=1`, { headers: { Accept: "application/json" } });
-            if (r.ok) {
-              const arr2 = await r.json().catch(() => null);
-              if (Array.isArray(arr2)) js = arr2[0] || null;
-            }
-          } catch (e) {}
-        }
-
         if (!js) {
           if (mounted) setError("Visitor not found");
           if (mounted) setLoading(false);
           return;
         }
-
-        // Normalize possible wrapper shapes (some APIs return { data: {...} } or { success:true, data: {...} })
         if (js && js.data && (typeof js.data === "object")) js = js.data;
         if (Array.isArray(js)) js = js[0] || null;
 
@@ -211,7 +198,6 @@ export default function TicketUpgrade() {
         if (mounted) setLoading(false);
       }
     }
-
     load();
     return () => { mounted = false; };
   }, [entity, id, providedTicketCode]);
@@ -231,7 +217,6 @@ export default function TicketUpgrade() {
     return String(selectedCategory).toLowerCase() === String(currentCategory).toLowerCase();
   }, [selectedCategory, currentCategory]);
 
-  // finalizeUpgrade: call backend then refresh and send email (await buildTicketEmail)
   const finalizeUpgrade = useCallback(async ({ method = "online", txId: tx = null, reference = null, proofUrl = null } = {}) => {
     setProcessing(true);
     setError("");
@@ -265,7 +250,6 @@ export default function TicketUpgrade() {
 
       const js = await res.json().catch(() => ({}));
 
-      // Try to fetch refreshed visitor (use same robust candidate strategy)
       let updated = null;
       try {
         if (targetId) {
@@ -280,7 +264,6 @@ export default function TicketUpgrade() {
         }
       } catch (e) { /* ignore */ }
 
-      // Normalize wrapper shapes
       if (updated && updated.data) updated = updated.data;
       if (Array.isArray(updated)) updated = updated[0] || null;
 
@@ -291,7 +274,6 @@ export default function TicketUpgrade() {
         if (cacheId) writeRegistrationCache("visitors", cacheId, finalRecord);
       } catch (e) {}
 
-      // build/send email: await buildTicketEmail
       try {
         const bannerUrl = (readLocalPricing() && readLocalPricing().bannerUrl) || "";
         const emailModel = {
@@ -307,7 +289,6 @@ export default function TicketUpgrade() {
           downloadUrl: `${FRONTEND_BASE}/ticket-download?entity=visitors&id=${encodeURIComponent(String(targetId || ""))}`,
           event: (finalRecord && finalRecord.event) || null
         };
-        // IMPORTANT: await the async email builder
         const tpl = await buildTicketEmail(emailModel);
         const { subject, text, html } = tpl;
         const mailPayload = { to: finalRecord?.email, subject, text, html, attachments: [] };
