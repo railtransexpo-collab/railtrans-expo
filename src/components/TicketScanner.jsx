@@ -1,25 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 
-/**
- * TicketScanner (robust)
- *
- * - Reads camera frames with getUserMedia, decodes QR using jsQR.
- * - Logs raw QR payload for debugging.
- * - Extracts ticket id from many formats:
- *   - plain string (e.g. "DLN2722" or "764154")
- *   - JSON with keys: ticket_code, ticketCode, ticket_id, id, code, c
- *   - compact JSON (short keys) like the screenshot you provided (key "c")
- *   - base64-encoded JSON (detects base64 and decodes)
- * - Calls POST /api/tickets/validate with { ticketId } to check existence.
- * - Shows match / no-match. Operator can press Print to call POST /api/tickets/print and open returned PDF.
- *
- * Props:
- * - apiValidate (default "/api/tickets/validate")
- * - apiPrint (default "/api/tickets/print")
- * - autoPrintOnValidate (bool) - if true will auto-request PDF once validated
- */
-
 function tryParseJsonSafe(str) {
   try {
     return JSON.parse(str);
@@ -29,23 +10,25 @@ function tryParseJsonSafe(str) {
 }
 
 function looksLikeBase64(s) {
-  // fairly tolerant: base64 chars and length multiple of 4
-  return typeof s === "string" && /^[A-Za-z0-9+/=]+$/.test(s.replace(/\s+/g, "")) && (s.length % 4 === 0);
+  return (
+    typeof s === "string" &&
+    /^[A-Za-z0-9+/=]+$/.test(s.replace(/\s+/g, "")) &&
+    s.length % 4 === 0
+  );
 }
 
 function extractTicketIdFromObject(obj) {
   if (!obj || typeof obj !== "object") return null;
-  const keys = Object.keys(obj);
-
-  // Common keys
   const prefer = ["ticket_code", "ticketCode", "ticket_id", "ticketId", "ticket", "code", "c", "id", "t", "tk"];
   for (const k of prefer) {
-    if (k in obj && obj[k] != null && String(obj[k]).trim() !== "") return String(obj[k]).trim();
+    if (Object.prototype.hasOwnProperty.call(obj, k)) {
+      const v = obj[k];
+      if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+    }
   }
-
-  // also search nested
-  for (const k of keys) {
-    const v = obj[k];
+  // nested search
+  for (const key of Object.keys(obj)) {
+    const v = obj[key];
     if (v && typeof v === "object") {
       const found = extractTicketIdFromObject(v);
       if (found) return found;
@@ -54,17 +37,37 @@ function extractTicketIdFromObject(obj) {
   return null;
 }
 
+function resolveApiUrl(p) {
+  if (!p) return null;
+  const s = String(p).trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s) || s.startsWith("data:")) return s;
+  const base = (typeof window !== "undefined" && (window.__BACKEND_ORIGIN__ || window.__REACT_APP_API_BASE__ || null)) ||
+               (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) ||
+               (typeof window !== "undefined" && window.location && window.location.origin) ||
+               "";
+  if (!base) return s.startsWith("/") ? s : `/${s}`;
+  return `${String(base).replace(/\/$/, "")}${s.startsWith("/") ? s : `/${s}`}`;
+}
+
 export default function TicketScanner({
-  apiValidate = "/api/tickets/validate",
-  apiPrint = "/api/tickets/print",
+  apiValidate = null,
+  apiPrint = null,
+  apiPath = null,
   autoPrintOnValidate = false,
 }) {
+  // derive endpoints if needed
+  const derivedValidate = apiValidate || (apiPath ? apiPath.replace(/\/scan\/?$/, "/validate") : null);
+  const derivedPrint = apiPrint || (apiPath ? apiPath.replace(/\/scan\/?$/, "/print") : null);
+
+  const validateUrl = resolveApiUrl(derivedValidate || "/api/tickets/validate");
+  const printUrl = resolveApiUrl(derivedPrint || "/api/tickets/print");
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
   const streamRef = useRef(null);
 
-  
   const [busy, setBusy] = useState(false);
   const [rawPayload, setRawPayload] = useState("");
   const [ticketId, setTicketId] = useState(null);
@@ -92,16 +95,21 @@ export default function TicketScanner({
 
         const tick = () => {
           if (!mounted) return;
-          if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
-            canvas.width = videoRef.current.videoWidth;
-            canvas.height = videoRef.current.videoHeight;
-            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+          try {
+            if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+              canvas.width = videoRef.current.videoWidth;
+              canvas.height = videoRef.current.videoHeight;
+              ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
 
-            if (code && !busy) {
-              handleRawScan(code.data);
+              if (code && !busy) {
+                handleRawScan(code.data);
+              }
             }
+          } catch (e) {
+            // continue - occasionally getImageData may throw on some devices
+            console.warn("frame read error", e && e.message);
           }
           rafRef.current = requestAnimationFrame(tick);
         };
@@ -139,14 +147,18 @@ export default function TicketScanner({
       // maybe it's base64 JSON
       if (looksLikeBase64(data)) {
         try {
-          const decoded = atob(data);
+          // atob can throw if not valid base64
+          const decoded = atob(String(data));
           parsed = tryParseJsonSafe(decoded);
           if (parsed) {
             extracted = extractTicketIdFromObject(parsed);
             console.log("[TicketScanner] decoded base64->json, extracted:", extracted, "decoded:", decoded);
+          } else {
+            // decode plain and try numeric substring
+            const m = decoded.match(/\d{3,12}/);
+            if (m) extracted = m[0];
           }
         } catch (e) {
-          // not JSON after base64 decode
           console.log("[TicketScanner] base64 decode failed or not JSON", e);
         }
       }
@@ -163,12 +175,16 @@ export default function TicketScanner({
         }
       }
 
-      // fallback: plain numeric/alphanumeric code
+      // fallback: plain token or numeric code
       if (!extracted) {
         const plain = String(data).trim();
-        if (/^[A-Za-z0-9\-_.]{3,50}$/.test(plain)) {
+        if (/^[A-Za-z0-9\-_.]{3,64}$/.test(plain)) {
           extracted = plain;
           console.log("[TicketScanner] treated raw as plain code:", plain);
+        } else {
+          // try extracting digits
+          const m = plain.match(/\d{3,12}/);
+          if (m) extracted = m[0];
         }
       }
     }
@@ -177,7 +193,6 @@ export default function TicketScanner({
       setMessage("QR scanned but no ticket id found.");
       setValidation({ ok: false, error: "No ticket id extracted" });
       setBusy(false);
-      // allow rescanning quickly
       setTimeout(() => setBusy(false), 700);
       return;
     }
@@ -186,11 +201,13 @@ export default function TicketScanner({
     setTicketId(extracted);
     setMessage(`Validating ticket: ${extracted}...`);
     try {
-      const res = await fetch(apiValidate, {
+      // Use validateUrl which should be absolute (resolveApiUrl handled relative)
+      const res = await fetch(validateUrl, {
         method: "POST",
-         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+        headers: { "Content-Type": "application/json" }, // keep preflight minimal
         body: JSON.stringify({ ticketId: extracted }),
       });
+
       const js = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.warn("[TicketScanner] validate non-ok", res.status, js);
@@ -200,7 +217,6 @@ export default function TicketScanner({
         setValidation({ ok: true, ticket: js.ticket || js });
         setMessage("Ticket validated ✔");
         if (autoPrintOnValidate) {
-          // auto request print
           await doPrint(extracted);
         }
       }
@@ -209,7 +225,6 @@ export default function TicketScanner({
       setValidation({ ok: false, error: e.message || String(e) });
       setMessage("Validation request error");
     } finally {
-      // small cooldown so scanner doesn't re-trigger immediately
       setTimeout(() => setBusy(false), 800);
     }
   }
@@ -218,9 +233,9 @@ export default function TicketScanner({
     if (!id) return;
     setMessage("Requesting print...");
     try {
-      const res = await fetch(apiPrint, {
+      const res = await fetch(printUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" ,"ngrok-skip-browser-warning": "69420" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId: id }),
       });
       if (!res.ok) {
@@ -236,7 +251,6 @@ export default function TicketScanner({
         window.open(url, "_blank");
         setMessage("PDF opened in new tab");
       } else {
-        // maybe JSON response
         const js = await res.json().catch(() => null);
         console.log("[TicketScanner] print response:", js);
         setMessage("Print returned non-PDF response");
@@ -247,7 +261,6 @@ export default function TicketScanner({
     }
   }
 
-  // small UI helpers
   function renderValidation() {
     if (!validation) return null;
     if (!validation.ok) {
@@ -263,7 +276,7 @@ export default function TicketScanner({
       <div className="p-3 bg-green-50 text-green-800 rounded">
         <div className="font-semibold">Matched</div>
         <div className="text-sm">{t.name || t.n || t.full_name || ""}</div>
-        <div className="text-xs text-gray-700">{t.company || t.org || t.company || ""} — {t.category || t.cat || t.ticket_category || ""}</div>
+        <div className="text-xs text-gray-700">{t.company || t.org || ""} — {t.category || t.cat || t.ticket_category || ""}</div>
         <div className="mt-2 flex gap-2">
           <button className="px-3 py-1 bg-[#196e87] text-white rounded" onClick={() => doPrint(ticketId)}>Print</button>
           <button className="px-3 py-1 bg-gray-100 rounded" onClick={() => { setValidation(null); setTicketId(null); setRawPayload(""); setMessage("Scanning for QR…"); }}>Reset</button>
