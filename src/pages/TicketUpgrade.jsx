@@ -40,55 +40,79 @@ async function uploadAsset(file) {
   }
 }
 
-/* ---------- main TicketUpgrade component ---------- */
+/* ---------- API base helpers ---------- */
+function sanitizeApiBaseCandidate(candidate) {
+  if (!candidate) return "";
+  let s = String(candidate).trim().replace(/\/+$/, "");
+  const low = s.toLowerCase();
+  const idx = low.indexOf("/api/");
+  const idxExact = low.endsWith("/api") ? low.lastIndexOf("/api") : -1;
+  if (idx >= 0) s = s.slice(0, idx);
+  if (idxExact >= 0) s = s.slice(0, idxExact);
+  return s;
+}
 
-const RAW_API_BASE = (typeof window !== "undefined" && (window.__API_BASE__ || "")) || (process.env.REACT_APP_API_BASE || process.env.API_BASE || process.env.BACKEND_URL || "");
-const API_BASE = String(RAW_API_BASE || "").replace(/\/$/, "");
+const RAW_API_BASE =
+  (typeof window !== "undefined" && (window.__API_BASE__ || "")) ||
+  (process.env.REACT_APP_API_BASE || process.env.API_BASE || process.env.BACKEND_URL || "");
+const API_BASE = sanitizeApiBaseCandidate(RAW_API_BASE);
 
-const RAW_FRONTEND_BASE = (typeof window !== "undefined" && (window.__FRONTEND_BASE__ || "")) || (process.env.REACT_APP_FRONTEND_BASE || process.env.FRONTEND_BASE || process.env.APP_URL || "");
+const RAW_FRONTEND_BASE =
+  (typeof window !== "undefined" && (window.__FRONTEND_BASE__ || "")) ||
+  (process.env.REACT_APP_FRONTEND_BASE || process.env.FRONTEND_BASE || process.env.APP_URL || "");
 const FRONTEND_BASE = String(RAW_FRONTEND_BASE || window.location?.origin || "http://localhost:3000").replace(/\/$/, "");
 
 function buildApiUrl(path) {
   if (!path) return API_BASE || path;
   if (/^https?:\/\//i.test(path)) return path;
+  if (!API_BASE) return path.startsWith("/") ? path : `/${path}`;
   if (path.startsWith("/")) return `${API_BASE}${path}`;
   return `${API_BASE}/${path}`;
 }
 
+/* ---------- fetching helpers ---------- */
 async function tryFetchCandidates(pathVariants = []) {
+  // Try absolute (API_BASE-based) candidates first is handled by callers (we return variants already ordered).
   for (const url of pathVariants) {
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const res = await fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" });
       const ct = (res && res.headers && typeof res.headers.get === "function") ? (res.headers.get("content-type") || "") : "";
       if (!res.ok) {
         if (res.status === 404) continue;
         const text = await res.text().catch(() => "");
-        throw new Error(`Request ${url} failed ${res.status} - ${text.slice(0, 400)}`);
+        console.warn(`Request ${url} failed ${res.status} - ${text.slice(0, 400)}`);
+        continue;
       }
       if (!ct.toLowerCase().includes("application/json")) {
         // likely index.html or non-json; skip
+        const txt = await res.text().catch(() => "");
+        console.warn(`[tryFetchCandidates] Non-JSON response from ${url} (content-type=${ct}). Snippet:`, txt ? txt.slice(0, 400) : "(empty)");
         continue;
       }
       const js = await res.json().catch(() => null);
       if (js !== null) return js;
     } catch (e) {
+      console.warn("[tryFetchCandidates] fetch error for", url, e && e.message ? e.message : e);
       continue;
     }
   }
   return null;
 }
 
+/* ---------- candidate builders (ABS first then relative) ---------- */
 function qCandidatesForVisitors(q) {
-  const rel = `/api/visitors?q=${encodeURIComponent(q)}&limit=1`;
   const abs = buildApiUrl(`/api/visitors?q=${encodeURIComponent(q)}&limit=1`);
-  return [rel, abs];
+  const rel = `/api/visitors?q=${encodeURIComponent(q)}&limit=1`;
+  return [abs, rel];
 }
 
 function idCandidatesForVisitors(id) {
-  const rel = `/api/visitors/${encodeURIComponent(String(id))}`;
   const abs = buildApiUrl(`/api/visitors/${encodeURIComponent(String(id))}`);
-  return [rel, abs];
+  const rel = `/api/visitors/${encodeURIComponent(String(id))}`;
+  return [abs, rel];
 }
+
+/* ---------- main TicketUpgrade component ---------- */
 
 export default function TicketUpgrade() {
   const [search] = useSearchParams();
@@ -155,8 +179,10 @@ export default function TicketUpgrade() {
         let js = null;
         if (id) {
           const candidates = idCandidatesForVisitors(id);
+          // try absolute first (API_BASE) then relative
           js = await tryFetchCandidates(candidates);
           if (!js) {
+            // fallback: treat id as query
             js = await tryFetchCandidates(qCandidatesForVisitors(id));
             if (Array.isArray(js)) js = js[0] || null;
             if (js && Array.isArray(js.rows)) js = js.rows[0] || null;
@@ -473,7 +499,7 @@ export default function TicketUpgrade() {
 
             <div className="mb-6">
               <div className="text-lg font-semibold mb-3">Preview E‑Badge</div>
-              <VisitorTicket visitor={record} qrSize={200} showQRCode={true} accentColor="#2b6b4a" />
+              <VisitorTicket visitor={record} qrSize={200} showQRCode={true} accentColor="#2b6b4a" apiBase={API_BASE} />
             </div>
 
             <div className="flex gap-3 items-center">
