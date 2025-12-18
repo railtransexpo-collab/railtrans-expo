@@ -1,7 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-/* Small helpers */
+/*
+  EmailOtpVerifier (frontend)
+  - Resolves backend base automatically from prop -> window.__API_BASE__ -> REACT_APP_API_BASE -> relative.
+  - Calls /api/otp/check-email, /api/otp/send and /api/otp/verify on that backend.
+  - Shows which collection/role was matched (info.collection / info.id) when email already exists.
+  - "Upgrade Ticket" button now navigates using plural `entity=` (e.g. entity=visitors&id=...) OR uses ticket_code fallback.
+  - Persists verifiedEmail to storage and notifies parent via setVerified and setForm.
+*/
+
 function isEmail(str) {
   return typeof str === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test((str || "").trim());
 }
@@ -15,12 +23,11 @@ function normalizeToRole(t) {
   const map = { visitor: "visitor", exhibitor: "exhibitor", speaker: "speaker", partner: "partner", awardee: "awardee" };
   return map[singular] || "visitor";
 }
+function ensurePluralRole(role) {
+  if (!role) return "visitors";
+  return role.endsWith("s") ? role : `${role}s`;
+}
 
-/* EmailOtpVerifier
-   - Ensures verified email is persisted to localStorage/sessionStorage when verification succeeds.
-   - Normalizes registrationType -> canonical role before calling APIs.
-   - Debounces check-email calls and hides raw server debug output by default.
-*/
 export default function EmailOtpVerifier({
   email = "",
   fieldName,
@@ -47,41 +54,51 @@ export default function EmailOtpVerifier({
   const emailValid = isEmail(emailNorm);
   const role = normalizeToRole(registrationType);
 
+  // Resolve backend base (prop -> window -> env -> "")
+  const resolvedApiBase = (apiBase && String(apiBase).trim())
+    || (typeof window !== "undefined" && (window.__API_BASE__ || window.__API_HOST__ || ""))
+    || (typeof process !== "undefined" && process.env && (process.env.REACT_APP_API_BASE || process.env.API_BASE) || "")
+    || "";
+
+  function buildUrl(path) {
+    if (!resolvedApiBase) return path.startsWith("/") ? path : `/${path}`;
+    return `${String(resolvedApiBase).replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  }
+
   useEffect(() => {
-    // Auto-check email in DB (debounced)
+    // Debounced check-email
     if (!emailValid) {
       setExisting(null);
       setMsg("");
+      setError("");
       return;
     }
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
     checkTimerRef.current = setTimeout(async () => {
       try {
-        const url = `${apiBase}/api/otp/check-email?email=${encodeURIComponent(emailNorm)}&type=${encodeURIComponent(role)}`;
+        const url = buildUrl(`/api/otp/check-email?email=${encodeURIComponent(emailNorm)}&type=${encodeURIComponent(role)}`);
         const res = await fetch(url, { headers: { "ngrok-skip-browser-warning": "true", Accept: "application/json" } });
-        const ct = res.headers.get("content-type") || "";
-        let data;
-        if (ct.includes("application/json")) data = await res.json().catch(() => null);
-        else {
-          setMsg("Unexpected server response");
-          return;
-        }
-        if (data && data.success && data.found) {
-          setExisting({ ...(data.info || {}), registrationType: role });
-          setMsg("Email already exists. Use Upgrade Ticket.");
+        let data = null;
+        try { data = await res.json(); } catch { data = null; }
+        if (res.ok && data && data.success && data.found) {
+          setExisting(data.info || null);
+          setMsg("Email already registered. You can upgrade the ticket.");
           setOtpSent(false);
+          setError("");
           return;
         }
         setExisting(null);
         setMsg("");
+        setError("");
       } catch (err) {
-        console.error("[check-email] error", err);
-        setMsg("Failed to check email");
+        console.error("[EmailOtpVerifier] check-email error:", err);
         setExisting(null);
+        setMsg("");
+        setError("Unable to check email");
       }
     }, 350);
     return () => { if (checkTimerRef.current) clearTimeout(checkTimerRef.current); };
-  }, [emailNorm, apiBase, role, emailValid]);
+  }, [emailNorm, resolvedApiBase, role]);
 
   useEffect(() => {
     // reset OTP UI when email changes
@@ -89,8 +106,6 @@ export default function EmailOtpVerifier({
     setOtpSent(false);
     setMsg("");
     setError("");
-    // Do not touch verified flag here; parent will manage it via localStorage or setVerified callback.
-    // (This avoids race where setForm triggers parent to clear verification before we persist it.)
   }, [emailNorm]);
 
   async function handleSendOtp() {
@@ -104,12 +119,14 @@ export default function EmailOtpVerifier({
     const requestId = makeRequestId();
 
     try {
-      const res = await fetch(`${apiBase}/api/otp/send`, {
+      const url = buildUrl("/api/otp/send");
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
         body: JSON.stringify({ type: "email", value: emailNorm, requestId, registrationType: role }),
       });
-      const data = await res.json().catch(() => null);
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
 
       if (res.status === 409 && data && data.existing) {
         setExisting({ ...(data.existing || {}), registrationType: role });
@@ -119,13 +136,14 @@ export default function EmailOtpVerifier({
       }
       if (res.ok && data && data.success) {
         setOtpSent(true);
-        setMsg("OTP sent");
+        setMsg("OTP sent to your email.");
+        setError("");
         return;
       }
       setError((data && (data.error || data.message)) || `Send failed (${res.status})`);
     } catch (err) {
-      console.error("[send-otp] error", err);
-      setError("Network error");
+      console.error("[EmailOtpVerifier] send-otp error:", err);
+      setError("Network error while sending OTP");
     } finally {
       sendingRef.current = false;
       setLoading(false);
@@ -141,26 +159,27 @@ export default function EmailOtpVerifier({
     setMsg(""); setError(""); setExisting(null);
 
     try {
-      const res = await fetch(`${apiBase}/api/otp/verify`, {
+      const url = buildUrl("/api/otp/verify");
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
         body: JSON.stringify({ value: emailNorm, otp: String(otp).trim(), registrationType: role }),
       });
-      const data = await res.json().catch(() => null);
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
 
       if (!data || !data.success) {
         setError((data && (data.error || data.message)) || "Verify failed");
         return;
       }
 
-      // Persist verified email so parent can detect it reliably when the form is updated
+      // Persist verified email so parent and other pages can reuse it
       try {
         const verifiedAddr = (data.email || emailNorm).trim().toLowerCase();
         localStorage.setItem("verifiedEmail", verifiedAddr);
         sessionStorage.setItem("verifiedEmail", verifiedAddr);
-      } catch (e) { /* ignore storage errors */ }
+      } catch (e) { /* ignore */ }
 
-      // Mark verified in parent state and update the form value (normalized)
       setVerified && setVerified(true);
       setMsg("Email verified");
 
@@ -171,12 +190,33 @@ export default function EmailOtpVerifier({
         } catch (e) { /* ignore */ }
       }
     } catch (err) {
-      console.error("[verify] error", err);
-      setError("Network/server error");
+      console.error("[EmailOtpVerifier] verify error", err);
+      setError("Network/server error while verifying OTP");
     } finally {
       verifyingRef.current = false;
       setLoading(false);
     }
+  }
+
+  function handleUpgradeNavigate() {
+    if (!existing) return;
+    // Determine plural collection name: prefer backend-provided collection, else role-based plural
+    const collection = existing.collection || ensurePluralRole(existing.registrationType || role);
+    const id = existing.id || existing._id || existing._id_str || (existing._id && existing._id.$oid) || null;
+    const ticket = existing.ticket_code || existing.ticketCode || null;
+
+    if (id) {
+      // Navigate using plural entity and id
+      navigate(`/ticket-upgrade?entity=${encodeURIComponent(collection)}&id=${encodeURIComponent(String(id))}`);
+      return;
+    }
+    if (ticket) {
+      // Fallback: use ticket_code search param
+      navigate(`/ticket-upgrade?entity=${encodeURIComponent(collection)}&ticket_code=${encodeURIComponent(String(ticket))}`);
+      return;
+    }
+    // As a last resort, open upgrade for visitors with email as q param (some backends support q=)
+    navigate(`/ticket-upgrade?entity=visitors&email=${encodeURIComponent(emailNorm)}`);
   }
 
   return (
@@ -222,12 +262,13 @@ export default function EmailOtpVerifier({
         <div className="ml-0 mt-2 p-2 bg-yellow-50 border border-yellow-100 rounded text-xs">
           <div className="mb-1 font-medium text-[#b45309]">Email already exists</div>
           <div className="text-xs text-gray-700 mb-2">
-            This email is already registered as {existing.registrationType}. Use Upgrade Ticket to update it.
+            Found in: <strong>{existing.collection || (existing.registrationType ? ensurePluralRole(existing.registrationType) : "visitors")}</strong>
+            {existing.id ? <> — ID: <code>{existing.id}</code></> : null}
           </div>
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => navigate(`/ticket-upgrade?type=${encodeURIComponent(existing.registrationType)}&id=${encodeURIComponent(String(existing.id || ""))}`)}
+              onClick={handleUpgradeNavigate}
               className="px-2 py-1 bg-white border rounded text-[#21809b] text-xs"
             >
               Upgrade Ticket

@@ -1,18 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * VisitorTicket
+ * VisitorTicket (robust)
  *
- * - QR encodes the ticket code ONLY (not a URL).
- * - Ticket code is NOT displayed as plain text anywhere on the badge or preview.
- * - If no ticket code is available, the UI shows the "Fetch server ticket code" button and copy payload button.
- *
- * Props:
- * - visitor: { id, name, designation, company, ticket_category, ticket_code, email, mobile, logoUrl, eventName, bannerUrl, sponsorLogos }
- * - pdfBlob: Blob | string (data url or base64) (optional)
- * - roleLabel, accentColor, showQRCode, qrSize, className
+ * - Tries to fetch visitor by id using candidate URLs (relative then API_BASE absolute).
+ * - Falls back to q= search (ticket_code) when direct id lookup fails.
+ * - Accepts multiple response shapes: object, { data: ... }, [ ... ].
+ * - Extracts ticket_code from multiple fields and updates UI.
+ * - Logs candidate URLs used for debugging.
  */
 
+/* ---------- helpers ---------- */
 function base64ToBlob(base64, contentType = "application/pdf") {
   try {
     const b64 = base64.indexOf("base64,") >= 0 ? base64.split("base64,")[1] : base64;
@@ -28,11 +26,101 @@ function base64ToBlob(base64, contentType = "application/pdf") {
   }
 }
 
+function resolveApiBase() {
+  try {
+    if (typeof window !== "undefined" && (window.__API_BASE__ || window.__API_BASE__)) {
+      return String(window.__API_BASE__ || window.__API_BASE__).replace(/\/$/, "");
+    }
+  } catch (e) {}
+  try {
+    if (typeof process !== "undefined" && process.env) {
+      return String(process.env.REACT_APP_API_BASE || process.env.API_BASE || "").replace(/\/$/, "");
+    }
+  } catch (e) {}
+  return "";
+}
+
+function buildApiUrl(apiBase, path) {
+  if (!path) return apiBase || path;
+  if (/^https?:\/\//i.test(path)) return path;
+  if (!apiBase) return path.startsWith("/") ? path : `/${path}`;
+  if (path.startsWith("/")) return `${apiBase}${path}`;
+  return `${apiBase}/${path}`;
+}
+
+async function tryFetchJsonCandidates(candidates = []) {
+  for (const url of candidates) {
+    try {
+      console.debug("[VisitorTicket] trying:", url);
+      const res = await fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" });
+      const ct = (res && res.headers && typeof res.headers.get === "function") ? (res.headers.get("content-type") || "") : "";
+      // prefer json responses
+      if (!res.ok) {
+        // skip if 404 (try other candidates)
+        if (res.status === 404) continue;
+        // non-404 -> still try to parse if possible for debugging
+      }
+      // If content-type not JSON, skip candidate (likely index.html)
+      if (!ct.toLowerCase().includes("application/json")) {
+        // attempt to read text for debugging, but don't treat as success
+        const txt = await res.text().catch(() => "");
+        console.warn("[VisitorTicket] candidate returned non-json content, skipping:", url, "content-snippet:", txt ? txt.slice(0, 800) : "(empty)");
+        continue;
+      }
+      const js = await res.json().catch(() => null);
+      if (js !== null) return { ok: true, url, body: js, status: res.status };
+    } catch (e) {
+      console.warn("[VisitorTicket] candidate fetch failed:", url, e && e.message ? e.message : e);
+      continue;
+    }
+  }
+  return { ok: false };
+}
+
+function extractTicketCodeFromResponse(js) {
+  if (!js) return "";
+  // support shapes: { ticket_code }, { data: { ticket_code } }, { rows: [...] }, array, nested fields
+  const candidates = [];
+
+  if (Array.isArray(js)) {
+    for (const it of js) {
+      if (it && typeof it === "object") candidates.push(it);
+    }
+  } else if (js && typeof js === "object") {
+    // If API uses { data: ... } wrapper
+    if (js.data && typeof js.data === "object") {
+      if (Array.isArray(js.data)) js.data.forEach(d => candidates.push(d));
+      else candidates.push(js.data);
+    } else if (Array.isArray(js.rows)) {
+      js.rows.forEach(d => candidates.push(d));
+    } else {
+      candidates.push(js);
+    }
+  }
+
+  for (const obj of candidates) {
+    if (!obj || typeof obj !== "object") continue;
+    const t = obj.ticket_code || obj.ticketCode || obj.code || obj.ticketId || obj.codeId || obj.code_id;
+    if (t && String(t).trim()) return String(t).trim();
+    // also look nested in form/data
+    if (obj.form && typeof obj.form === "object") {
+      const f = obj.form.ticket_code || obj.form.ticketCode || obj.form.code || obj.form.ticketId;
+      if (f && String(f).trim()) return String(f).trim();
+    }
+    if (obj.data && typeof obj.data === "object") {
+      const d = obj.data.ticket_code || obj.data.ticketCode || obj.data.code || obj.data.ticketId;
+      if (d && String(d).trim()) return String(d).trim();
+    }
+  }
+  return "";
+}
+
+/* ---------- component ---------- */
 export default function VisitorTicket({
   visitor,
   pdfBlob,
   roleLabel,
-  accentColor = "#c8102e", // red bar at bottom like sample
+  accentColor = "#c8102e",
   showQRCode = true,
   qrSize = 220,
   className = "",
@@ -46,8 +134,10 @@ export default function VisitorTicket({
   );
   const [fetchingServerCode, setFetchingServerCode] = useState(false);
   const [fetchError, setFetchError] = useState("");
+  const [lastTriedUrls, setLastTriedUrls] = useState([]);
 
-  // prepare object URL for pdfBlob
+  const [debugInfo, setDebugInfo] = useState(null);
+
   useEffect(() => {
     if (!pdfBlob) {
       if (downloadUrlRef.current) {
@@ -57,7 +147,6 @@ export default function VisitorTicket({
       setDownloadUrl(null);
       return;
     }
-
     if (typeof pdfBlob === "string") {
       if (pdfBlob.startsWith("data:")) {
         setDownloadUrl(pdfBlob);
@@ -74,14 +163,12 @@ export default function VisitorTicket({
       setDownloadUrl(null);
       return;
     }
-
     if (pdfBlob instanceof Blob) {
       const url = URL.createObjectURL(pdfBlob);
       setDownloadUrl(url);
       downloadUrlRef.current = url;
       return;
     }
-
     setDownloadUrl(null);
     return () => {
       if (downloadUrlRef.current) {
@@ -92,16 +179,6 @@ export default function VisitorTicket({
   }, [pdfBlob]);
 
   useEffect(() => {
-    return () => {
-      if (downloadUrlRef.current) {
-        try { URL.revokeObjectURL(downloadUrlRef.current); } catch {}
-        downloadUrlRef.current = null;
-      }
-    };
-  }, []);
-
-  // keep localTicketCode in sync when visitor prop changes
-  useEffect(() => {
     if (!visitor) {
       setLocalTicketCode("");
       return;
@@ -110,16 +187,13 @@ export default function VisitorTicket({
     setLocalTicketCode(canonical ? String(canonical).trim() : "");
   }, [visitor]);
 
-  // stable derived values
   const v = visitor || {};
   const name = v.name || v.full_name || v.title || "";
-  const designation = v.designation || v.role || "";
   const company = v.company || v.organization || "";
   const ticketCategory = (v.ticket_category || v.category || roleLabel || "VISITOR").toString().toUpperCase();
   const providedTicketCode = v.ticket_code || v.ticketCode || v.ticketId || "";
-  const safeTicketCode = localTicketCode ? String(localTicketCode).trim() : (providedTicketCode ? String(providedTicketCode).trim() : "");
-  // QR must contain only the ticket code
-  const qrData = safeTicketCode || "";
+
+  const qrData = localTicketCode || providedTicketCode || "";
   const qrUrl = qrData
     ? `https://chart.googleapis.com/chart?cht=qr&chs=${qrSize}x${qrSize}&chl=${encodeURIComponent(qrData)}&choe=UTF-8`
     : null;
@@ -165,53 +239,95 @@ export default function VisitorTicket({
     };
   }, []);
 
-  // fetch server canonical ticket code (visitors then speakers)
+  const apiBase = resolveApiBase();
+
   const fetchCanonicalTicketCode = useCallback(async () => {
     setFetchError("");
     setFetchingServerCode(true);
+    setLastTriedUrls([]);
+    setDebugInfo(null);
+
     try {
-      if (!v || !v.id) {
-        setFetchError("No id available");
+      // prefer v.id if available
+      const entityId = v && (v.id || v._id || v._id && v._id.$oid) ? String(v.id || v._id || (v._id && v._id.$oid)) : "";
+      const candidatesTried = [];
+
+      // helpers to build candidate lists
+      const idCandidates = (idVal) => {
+        const rel = `/api/visitors/${encodeURIComponent(String(idVal))}`;
+        const abs = buildApiUrl(apiBase, `/api/visitors/${encodeURIComponent(String(idVal))}`);
+        return [rel, abs];
+      };
+      const qCandidates = (q) => {
+        const rel = `/api/visitors?q=${encodeURIComponent(q)}&limit=1`;
+        const abs = buildApiUrl(apiBase, `/api/visitors?q=${encodeURIComponent(q)}&limit=1`);
+        return [rel, abs];
+      };
+
+      let result = null;
+
+      if (entityId) {
+        const candidates = idCandidates(entityId);
+        candidatesTried.push(...candidates);
+        const out = await tryFetchJsonCandidates(candidates);
+        if (out.ok) result = out.body;
+        else {
+          // try treating id as ticket_code (q=)
+          const fallback = qCandidates(entityId);
+          candidatesTried.push(...fallback);
+          const out2 = await tryFetchJsonCandidates(fallback);
+          if (out2.ok) result = out2.body;
+        }
+      }
+
+      // If no id or still nothing, try provided ticket_code in visitor prop
+      if (!result && providedTicketCode) {
+        const cands = qCandidates(providedTicketCode);
+        candidatesTried.push(...cands);
+        const out = await tryFetchJsonCandidates(cands);
+        if (out.ok) result = out.body;
+      }
+
+      // As a last resort, try the tickets collection by id (some setups store ticket in tickets)
+      if (!result && entityId) {
+        const rel = `/api/tickets/${encodeURIComponent(String(entityId))}`;
+        const abs = buildApiUrl(apiBase, `/api/tickets/${encodeURIComponent(String(entityId))}`);
+        candidatesTried.push(rel, abs);
+        const out = await tryFetchJsonCandidates([rel, abs]);
+        if (out.ok) result = out.body;
+      }
+
+      setLastTriedUrls(candidatesTried);
+      setDebugInfo({ tried: candidatesTried });
+
+      if (!result) {
+        setFetchError("No ticket record found on server (checked candidate endpoints). Check network tab for details.");
         setFetchingServerCode(false);
         return;
       }
-      let res = await fetch(`/api/visitors/${encodeURIComponent(String(v.id))}`);
-      if (!res.ok) {
-        res = await fetch(`/api/speakers/${encodeURIComponent(String(v.id))}`);
-      }
-      if (!res.ok) {
-        setFetchError(`Server responded ${res.status}`);
+
+      // extract ticket_code from response
+      const ticket = extractTicketCodeFromResponse(result);
+      if (ticket) {
+        setLocalTicketCode(ticket);
         setFetchingServerCode(false);
         return;
       }
-      const js = await res.json().catch(() => null);
-      if (!js) {
-        setFetchError("Empty response from server");
-        setFetchingServerCode(false);
-        return;
-      }
-      // prefer returned updated.ticket_code if present
-      const maybe = js.updated || js || (Array.isArray(js) && js[0]) || {};
-      const canonical = maybe.ticket_code || maybe.ticketCode || maybe.ticketId || "";
-      if (canonical) {
-        setLocalTicketCode(String(canonical).trim());
-      } else {
-        setFetchError("No ticket code returned");
-      }
+
+      // If response contains wrapper with nested data that has ticket_code, try to coerce
+      // (handled in extractTicketCodeFromResponse) — if still nothing, show debug body snippet
+      setFetchError("Server returned record but no ticket_code found in response.");
+      setDebugInfo(prev => ({ ...prev, body: result }));
     } catch (e) {
-      console.error(e);
+      console.error("[VisitorTicket] fetchCanonicalTicketCode error:", e && (e.message || e));
       setFetchError(String(e && e.message ? e.message : e));
     } finally {
       setFetchingServerCode(false);
     }
-  }, [v]);
+  }, [v, apiBase, providedTicketCode]);
 
-  if (!visitor) return null;
-
-  // Render badge layout designed to resemble provided images.
   return (
     <div ref={cardRef} className={`mx-auto max-w-[860px] bg-transparent ${className}`}>
-      {/* Top banner */}
       <div style={{ background: "#eedfbf", borderTopLeftRadius: 8, borderTopRightRadius: 8 }}>
         {v.bannerUrl ? (
           <img src={v.bannerUrl} alt="Event banner" style={{ width: "100%", display: "block", borderTopLeftRadius: 8, borderTopRightRadius: 8 }} />
@@ -220,9 +336,7 @@ export default function VisitorTicket({
         )}
       </div>
 
-      {/* Background area with light blue gradient */}
       <div style={{ background: "linear-gradient(#e8f8fb, #ffffff)", padding: "28px 28px 0", borderLeft: "1px solid rgba(0,0,0,0.03)", borderRight: "1px solid rgba(0,0,0,0.03)" }}>
-        {/* central white card */}
         <div style={{
           maxWidth: 520,
           margin: "0 auto",
@@ -236,14 +350,12 @@ export default function VisitorTicket({
           <div style={{ fontSize: 28, fontWeight: 800, color: "#0b1820", marginBottom: 6 }}>{name || " "}</div>
           {company ? <div style={{ fontSize: 18, color: "#111827", marginBottom: 18 }}>{company}</div> : null}
 
-          {/* QR only — ticket code is NOT displayed as text */}
           {showQRCode && qrUrl ? (
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center", margin: "12px 0 8px" }}>
               <img src={qrUrl} alt={qrData ? `QR` : "QR"} width={qrSize} height={qrSize} style={{ borderRadius: 8 }} />
             </div>
           ) : null}
 
-          {/* If no ticket code (and therefore no QR) show fetch/copy UI */}
           {!qrData && (
             <div style={{ marginTop: 12 }}>
               <div style={{ color: "#ef4444", fontWeight: 700 }}>Ticket code not available</div>
@@ -279,11 +391,21 @@ export default function VisitorTicket({
                 </button>
               </div>
               {fetchError ? <div style={{ marginTop: 8, color: "#b91c1c" }}>{fetchError}</div> : null}
+              {debugInfo && debugInfo.tried ? (
+                <div style={{ marginTop: 8, color: "#374151", fontSize: 12, textAlign: "left" }}>
+                  <div style={{ fontWeight: 700 }}>Tried endpoints (debug):</div>
+                  <ul style={{ paddingLeft: 16 }}>
+                    {debugInfo.tried.map((u, i) => <li key={i}><code style={{ fontSize: 11 }}>{u}</code></li>)}
+                  </ul>
+                </div>
+              ) : null}
+              {debugInfo && debugInfo.body ? (
+                <pre style={{ marginTop: 8, fontSize: 11, maxHeight: 200, overflow: "auto", background: "#f8fafc", padding: 8 }}>{JSON.stringify(debugInfo.body, null, 2)}</pre>
+              ) : null}
             </div>
           )}
         </div>
 
-        {/* sponsors / logos strip (placeholder) */}
         <div style={{ marginTop: 22, display: "flex", justifyContent: "center", gap: 18, alignItems: "center", paddingBottom: 8 }}>
           {v.sponsorLogos && Array.isArray(v.sponsorLogos) && v.sponsorLogos.length ? (
             v.sponsorLogos.slice(0, 3).map((src, i) => (
@@ -299,14 +421,12 @@ export default function VisitorTicket({
         </div>
       </div>
 
-      {/* bottom colored bar with role label */}
       <div style={{ background: accentColor, padding: "26px 0", borderBottomLeftRadius: 8, borderBottomRightRadius: 8 }}>
         <div style={{ textAlign: "center", color: "#ffffff", fontSize: 48, fontWeight: 900, letterSpacing: "0.06em" }}>
           {ticketCategory || "VISITOR"}
         </div>
       </div>
 
-      {/* action buttons */}
       <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 12 }}>
         {downloadUrl ? (
           <button onClick={handleDownload} style={{ padding: "12px 20px", background: "#0b556b", color: "#fff", borderRadius: 8, border: "none", fontWeight: 700 }}>Download E‑Badge PDF</button>
