@@ -15,7 +15,6 @@ const API_BASE = (
 ).replace(/\/$/, "");
 
 // IMPORTANT: FRONTEND_BASE must point to the public frontend origin (used for download/upgrade links & resolving relative urls)
-// Prefer explicit env var REACT_APP_FRONTEND_BASE / FRONTEND_BASE, then runtime override window.__FRONTEND_BASE__, then window.location.origin
 const FRONTEND_BASE = (
   process.env.REACT_APP_FRONTEND_BASE ||
   process.env.FRONTEND_BASE ||
@@ -213,7 +212,6 @@ async function sendTicketEmailUsingTemplate({
   badgeTemplateUrl,
   config,
 }) {
-  // Use the public frontend origin for download/upgrade links and for resolving relative image URLs.
   const frontendBase = FRONTEND_BASE || window.location.origin || "";
 
   const visitorId =
@@ -280,7 +278,6 @@ async function sendTicketEmailUsingTemplate({
   } catch {}
 
   const emailModel = {
-    // IMPORTANT: pass frontendBase = FRONTEND_BASE so server-side template resolves relative uploads to public host
     frontendBase,
     entity: "visitors",
     id: visitorId,
@@ -292,18 +289,15 @@ async function sendTicketEmailUsingTemplate({
     downloadUrl,
     form: visitor || null,
     logoUrl,
-    // pass event object if we have canonical event details on the client
     event: config && config.eventDetails ? config.eventDetails : null,
   };
 
-  // buildTicketEmail must not return image attachments; we strip any if present
   const tpl = await buildTicketEmail(emailModel);
   const subject = tpl.subject;
   const text = tpl.text;
   const html = tpl.html;
   const templateAttachments = tpl.attachments || [];
 
-  // Ensure we do not send any image attachments from the template (defensive)
   const attachments = Array.isArray(templateAttachments)
     ? templateAttachments.filter((a) => {
         const ct = String(a.contentType || a.content_type || "").toLowerCase();
@@ -327,8 +321,8 @@ async function sendTicketEmailUsingTemplate({
     subject,
     text,
     html,
-    logoUrl, // server may use this, but it should not auto-attach the image
-    attachments, // only non-image attachments (e.g. PDF)
+    logoUrl,
+    attachments,
   };
 
   const result = await postMailer(mailPayload);
@@ -342,11 +336,40 @@ async function sendTicketEmailUsingTemplate({
   return result.body;
 }
 
+/* ---------- reminder helper (client-side) ----------
+   Call server's /api/reminders/scheduled with entityId to let server schedule/send reminders.
+   This is a best-effort call; server will use API_BASE to fetch the record and compute daysUntilEvent.
+*/
+async function scheduleReminderClient(entityId) {
+  if (!entityId) return { ok: false, error: "missing entityId" };
+  try {
+    const payload = {
+      entity: "visitors",
+      entityId: String(entityId),
+      scheduleDays: [7, 3, 1, 0],
+    };
+    const res = await fetch(`${API_BASE}/api/reminders/scheduled`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+      body: JSON.stringify(payload),
+    });
+    const txt = await res.text().catch(() => null);
+    let js = null;
+    try { js = txt ? JSON.parse(txt) : null; } catch {}
+    if (!res.ok) {
+      return { ok: false, status: res.status, body: js || txt };
+    }
+    return { ok: true, status: res.status, body: js || txt };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 /* ---------- Visitors component ---------- */
 export default function Visitors() {
   const [step, setStep] = useState(1);
   const [config, setConfig] = useState(null);
-  const [canonicalEvent, setCanonicalEvent] = useState(null); // canonical event-details fetched from /api/configs/event-details
+  const [canonicalEvent, setCanonicalEvent] = useState(null);
   const [form, setForm] = useState({ email: "" });
   const [ticketCategory, setTicketCategory] = useState("");
   const [ticketMeta, setTicketMeta] = useState({
@@ -364,9 +387,10 @@ export default function Visitors() {
   const [badgeTemplateUrl, setBadgeTemplateUrl] = useState("");
   const [error, setError] = useState("");
   const finalizeCalledRef = useRef(false);
-
-  // New ref to avoid repeated finalization upserts
   const savedAttemptedRef = useRef(false);
+
+  const [reminderScheduled, setReminderScheduled] = useState(false);
+  const [reminderError, setReminderError] = useState("");
 
   const videoRef = useRef(null);
   const [bgVideoReady, setBgVideoReady] = useState(false);
@@ -414,7 +438,6 @@ export default function Visitors() {
           return;
         }
       }
-      // fallback to legacy endpoint
       const legacyUrl = `${API_BASE}/api/event-details`;
       try {
         const r2 = await fetch(`${legacyUrl}?cb=${Date.now()}`, {
@@ -430,7 +453,6 @@ export default function Visitors() {
           return;
         }
       } catch {}
-      // nothing found
       setCanonicalEvent(null);
     } catch (e) {
       console.warn("[Visitors] fetchCanonicalEvent failed", e);
@@ -530,7 +552,6 @@ export default function Visitors() {
 
   /**
    * saveVisitor
-   * - Sends form to server and returns a normalized result object instead of throwing
    */
   const saveVisitor = useCallback(
     async (nextForm) => {
@@ -660,7 +681,6 @@ export default function Visitors() {
       let ticket_code =
         form.ticket_code || (visitor && visitor.ticket_code) || null;
 
-      // --- Persist only once here (when completing) ---
       if (!savedAttemptedRef.current) {
         try {
           const saveResult = await saveVisitor({ ...form, email: finalEmail });
@@ -690,7 +710,6 @@ export default function Visitors() {
         }
       }
 
-      // If we already saved and can fetch ticket_code from saved record, prefer that
       if (!ticket_code && savedVisitorId) {
         try {
           const r = await fetch(
@@ -715,7 +734,6 @@ export default function Visitors() {
         }
       }
 
-      // If still no ticket_code, generate one and persist it (only once)
       if (!ticket_code) {
         const gen = String(Math.floor(100000 + Math.random() * 900000));
         ticket_code = gen;
@@ -788,6 +806,36 @@ export default function Visitors() {
         }
       }
 
+      // --- SCHEDULE REMINDER (best-effort) ---
+      try {
+        // Determine event date (prefer config -> canonicalEvent -> form fields)
+        const evDateRaw =
+          (config && config.eventDetails && (config.eventDetails.date || config.eventDetails.dates)) ||
+          (canonicalEvent && (canonicalEvent.date || canonicalEvent.dates)) ||
+          (form && (form.eventDates || form.date)) ||
+          null;
+
+        if ((savedVisitorId || (fullVisitor && fullVisitor.id) || savedAttemptedRef.current) && (savedVisitorId || fullVisitor.id || savedAttemptedRef.current)) {
+          const idToUse = savedVisitorId || (fullVisitor && fullVisitor.id) || null;
+          if (idToUse) {
+            const schedRes = await scheduleReminderClient(idToUse);
+            if (schedRes && schedRes.ok) {
+              setReminderScheduled(true);
+              setReminderError("");
+            } else {
+              setReminderScheduled(false);
+              const errMsg =
+                (schedRes && (schedRes.error || schedRes.body || schedRes.status)) ||
+                "Schedule failed";
+              setReminderError(String(errMsg).slice(0, 500));
+              console.warn("[Visitors] scheduleReminderClient response:", schedRes);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[Visitors] schedule reminder step failed", e);
+      }
+
       setStep(4);
     } catch (err) {
       console.error("completeRegistrationAndEmail error:", err);
@@ -806,7 +854,6 @@ export default function Visitors() {
     emailSent,
     badgeTemplateUrl,
     saveVisitor,
-    sendTicketEmailUsingTemplate,
     API_BASE,
   ]);
 
@@ -815,12 +862,12 @@ export default function Visitors() {
       completeRegistrationAndEmail();
     }
   }, [step, ticketMeta, processing, completeRegistrationAndEmail]);
+
   useEffect(() => {
     if (step === 4) {
       const timer = setTimeout(() => {
         window.location.href = "https://www.railtransexpo.com/";
-      }, 3000); // redirect after 3 seconds
-
+      }, 3000);
       return () => clearTimeout(timer);
     }
   }, [step]);
@@ -892,6 +939,8 @@ export default function Visitors() {
                 email={visitor?.email}
                 messageOverride="Thank you for registering — check your email for the ticket."
               />
+              {reminderScheduled && <div className="text-green-700 mt-3 text-center">Reminder scheduled for event date.</div>}
+              {reminderError && <div className="text-red-600 mt-3 text-center">Reminder error: {reminderError}</div>}
             </div>
           )}
         </div>
@@ -1069,10 +1118,16 @@ export default function Visitors() {
           )}
 
           {step === 4 && (
-            <ThankYouMessage
-              email={visitor?.email}
-              messageOverride="Thank you for registering — check your email for the ticket."
-            />
+            <>
+              <ThankYouMessage
+                email={visitor?.email}
+                messageOverride="Thank you for registering — check your email for the ticket."
+              />
+              <div className="mt-4 text-center">
+                {reminderScheduled && <div className="text-green-700">Reminder scheduled for event date.</div>}
+                {reminderError && <div className="text-red-600">Reminder error: {reminderError}</div>}
+              </div>
+            </>
           )}
 
           {!isMobile && bgVideoErrorMsg && (

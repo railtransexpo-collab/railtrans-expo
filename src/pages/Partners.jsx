@@ -198,11 +198,30 @@ async function resolveLogoUrl(config = {}) {
 }
 
 /* schedule reminder wrapper using /api/reminders/send */
+/* schedule reminder wrapper using /api/reminders/send (defensive, sends ISO date) */
 async function scheduleReminder(partnerId, eventDate) {
   try {
     if (!partnerId || !eventDate) return { ok: false, error: "missing" };
-    const payload = { entity: "partners", entityId: partnerId, eventDate };
-    return await postJSON(apiUrl("/api/reminders/send"), payload);
+
+    // Normalize eventDate to ISO string if possible
+    let ev = eventDate;
+    try {
+      const d = new Date(eventDate);
+      if (!isNaN(d.getTime())) ev = d.toISOString();
+    } catch (e) {
+      // leave as-is if conversion fails
+    }
+
+    const payload = { entity: "partners", entityId: partnerId, eventDate: ev };
+    const res = await postJSON(apiUrl("/api/reminders/send"), payload);
+
+    if (!res || !res.ok) {
+      console.warn("[Partners] scheduleReminder failed", { partnerId, eventDate: ev, res });
+    } else {
+      console.debug("[Partners] scheduleReminder success", { partnerId, eventDate: ev, res });
+    }
+
+    return res;
   } catch (e) {
     console.warn("scheduleReminder failed", e);
     return { ok: false, error: String(e) };

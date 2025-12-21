@@ -19,14 +19,8 @@ const DEFAULT_CATEGORIES_BY_ROLE = {
     { value: "premium", label: "Premium", price: 2500, gst: 0.18, features: ["Priority Access", "Premium Lounge", "E-Ticket with QR"], button: "Get Premium Ticket" },
     { value: "combo", label: "Combo", price: 5000, gst: 0.18, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" }
   ],
-  exhibitors: [
-    { value: "premium", label: "Premium", price: 5000, gst: 0.18, features: ["Premium exhibitor listing", "Booth access", "E-Ticket with QR"], button: "Get Premium" }
-  ],
   partners: [
     { value: "premium", label: "Premium", price: 15000, gst: 0.18, features: ["Partner Branding", "Premium Booth", "Speaker slot"], button: "Get Premium" }
-  ],
-  speakers: [
-    { value: "premium", label: "Premium", price: 0, gst: 0, features: ["Speaker pass", "Access to Speaker Lounge"], button: "Claim Speaker Pass" }
   ],
   awardees: [
     { value: "premium", label: "Premium", price: 0, gst: 0, features: ["Awardee pass", "Stage Access"], button: "Claim Awardee Pass" }
