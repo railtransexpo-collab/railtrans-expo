@@ -1,19 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import Topbar from "../components/Topbar";
 import DynamicRegistrationForm from "./DynamicRegistrationForm";
-import TicketCategorySelector from "../components/TicketCategoryGenerator";
-import ManualPaymentStep from "../components/ManualPayemntStep";
 import ThankYouMessage from "../components/ThankYouMessage";
-import { generateVisitorBadgePDF } from "../utils/pdfGenerator";
-import { buildTicketEmail } from "../utils/emailTemplate";
 
 /*
   Exhibitors.jsx
-  - Adds ngrok bypass header on key fetches
-  - Fetches canonical event-details from /api/configs/event-details (fallback /api/event-details)
-    and shows it in the UI (preview). Listens to config-updated and event-details-updated to refresh.
-  - Makes payment status polling and proof uploads include ngrok header.
-  - Keeps previous robust field/config normalization and defaults.
+  - Simplified for free registrations only:
+    * No payment
+    * No ticket / badge / PDF
+    * No ticket-style email
+    * Only one simple “Thank you for registering, we’ll get back to you soon” email
 */
 
 function clone(obj) {
@@ -185,160 +181,7 @@ function findFieldValue(obj = {}, candidates = []) {
   }
   return "";
 }
-async function toBase64(pdf) {
-  if (!pdf) return "";
-  if (typeof pdf === "string") {
-    const m = pdf.match(/^data:application\/pdf;base64,(.*)$/i);
-    if (m) return m[1];
-    if (/^[A-Za-z0-9+/=]+$/.test(pdf)) return pdf;
-    return "";
-  }
-  if (pdf instanceof ArrayBuffer)
-    pdf = new Blob([pdf], { type: "application/pdf" });
-  if (pdf instanceof Blob) {
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result || "";
-        resolve(String(result).split(",")[1] || "");
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(pdf);
-    });
-  }
-  return "";
-}
-async function sendMailPayload(payload) {
-  const res = await fetch(apiUrl("/api/mailer"), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "ngrok-skip-browser-warning": "69420",
-    },
-    body: JSON.stringify(payload),
-  });
-  let body = null;
-  try {
-    body = await res.json();
-  } catch {}
-  return { ok: res.ok, status: res.status, body };
-}
 
-/* Helper: fetch logo URL from server endpoint */
-async function fetchLogoUrlFromServer() {
-  try {
-    const r = await fetch(apiUrl("/api/admin/logo-url"), {
-      headers: {
-        Accept: "application/json",
-        "ngrok-skip-browser-warning": "69420",
-      },
-    });
-    if (!r.ok) return "";
-    const js = await r.json().catch(() => null);
-    return js?.logo_url || js?.logoUrl || js?.url || "";
-  } catch (e) {
-    return "";
-  }
-}
-
-/* Build & send templated email using buildTicketEmail (unchanged) */
-/* Replace the existing sendTemplatedAckEmail function with the following in src/pages/Exhibitors.jsx */
-async function sendTemplatedAckEmail(
-  exhibitor,
-  insertedId,
-  eventDetails = {},
-  images = [],
-  pdfBlob = null,
-  config = {}
-) {
-  const to =
-    exhibitor.email ||
-    (exhibitor._rawForm &&
-      (exhibitor._rawForm.email || exhibitor._rawForm.contactEmail)) ||
-    "";
-  if (!to) return { ok: false, error: "no-recipient" };
-
-  // Pass a frontendBase so buildTicketEmail can resolve relative paths server-side.
-  const frontendBase =
-    (typeof window !== "undefined" &&
-      (window.__FRONTEND_BASE__ || window.location.origin)) ||
-    "";
-
-  // Do not call /api/admin/logo-url from the browser (removed).
-  // If config contains an explicit logo reference, keep it as a fallback, but do not rely on it for correctness.
-  let logoUrl = "";
-  if (
-    config &&
-    (config.logoUrl ||
-      config.topbarLogo ||
-      (config.adminTopbar && config.adminTopbar.logoUrl))
-  ) {
-    logoUrl =
-      normalizeAdminUrl(
-        config.logoUrl ||
-          config.topbarLogo ||
-          (config.adminTopbar && config.adminTopbar.logoUrl)
-      ) || "";
-  } else {
-    try {
-      const raw = localStorage.getItem("admin:topbar");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.logoUrl)
-          logoUrl =
-            normalizeAdminUrl(parsed.logoUrl) || String(parsed.logoUrl).trim();
-      }
-    } catch {}
-  }
-  logoUrl = logoUrl || "";
-
-  const emailModel = {
-    // Pass frontendBase so buildTicketEmail will try to fetch admin-config / resolve relative uploads using this base.
-    frontendBase,
-    entity: "exhibitors",
-    id: insertedId || exhibitor.insertedId || exhibitor.id || "",
-    name:
-      exhibitor.name ||
-      exhibitor.company ||
-      (exhibitor._rawForm &&
-        (exhibitor._rawForm.name || exhibitor._rawForm.company)) ||
-      "",
-    company: exhibitor.company || exhibitor._rawForm?.company || "",
-    ticket_category:
-      exhibitor.ticket_category || exhibitor._rawForm?.ticket_category || "",
-    badgePreviewUrl: "",
-    downloadUrl: "",
-    // Pass fallback logoUrl (optional); mailer will prefer server-resolved admin-config.
-    logoUrl,
-    form: exhibitor._rawForm || exhibitor || {},
-    pdfBase64: null,
-  };
-
-  // Let buildTicketEmail fetch admin-config server-side when called on the server, or use frontendBase to build absolute URLs.
-  const {
-    subject,
-    text,
-    html,
-    attachments: templateAttachments = [],
-  } = await buildTicketEmail(emailModel);
-
-  const attachments = Array.isArray(templateAttachments)
-    ? [...templateAttachments]
-    : [];
-  if (pdfBlob) {
-    const b64 = await toBase64(pdfBlob);
-    if (b64)
-      attachments.push({
-        filename: `e-badge.pdf`,
-        content: b64,
-        encoding: "base64",
-        contentType: "application/pdf",
-      });
-  }
-
-  const mailPayload = { to, subject, text, html, logoUrl, attachments };
-  return await sendMailPayload(mailPayload);
-}
 /* API helpers (unchanged) */
 async function saveExhibitorApi(payload) {
   const res = await fetch(apiUrl("/api/exhibitors"), {
@@ -369,18 +212,17 @@ async function scheduleReminder(entityId, eventDate) {
   try {
     if (!entityId || !eventDate) return;
     const payload = { entity: "exhibitors", entityId, eventDate };
-    const res = await fetch(apiUrl("/api/reminders/send"), {
+    const res = await fetch(apiUrl("/api/reminders/scheduled"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "69420",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        entity: "exhibitors",
+        entityId,
+        scheduleDays: [0], // send immediately
+      }),
     });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      console.warn("[Exhibitors] reminder scheduling failed:", res.status, txt);
-    }
   } catch (e) {
     console.warn("[Exhibitors] scheduleReminder error:", e);
   }
@@ -460,20 +302,6 @@ export default function Exhibitors() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [savedId, setSavedId] = useState(null);
-
-  const [ticketCategory, setTicketCategory] = useState("");
-  const [ticketMeta, setTicketMeta] = useState({
-    price: 0,
-    gstRate: 0,
-    gstAmount: 0,
-    total: 0,
-    label: "",
-  });
-
-  const [txId, setTxId] = useState("");
-  const [proofFile, setProofFile] = useState(null);
-
-  const videoRef = useRef(null);
   const apiBase = getApiBaseFromEnvOrWindow();
 
   async function fetchConfig() {
@@ -650,163 +478,11 @@ export default function Exhibitors() {
     setError("");
     setForm(formData || {});
     await saveStep("registration_attempt", { form: formData }).catch(() => {});
-    setStep(2);
+    // Directly save (no ticket / payment)
+    await finalizeSave();
   }
 
-  function handleTicketSelect(value, meta = {}) {
-    setTicketCategory(value);
-    const price = Number(meta.price || 0);
-    const gstRate = Number(meta.gst || meta.gstRate || 0);
-    const gstAmount = Math.round(price * gstRate);
-    const total =
-      meta.total !== undefined ? Number(meta.total) : price + gstAmount;
-    setTicketMeta({
-      price,
-      gstRate,
-      gstAmount,
-      total,
-      label: meta.label || "",
-    });
-
-    if (total === 0) {
-      finalizeSave({
-        ticket_category: value,
-        ticket_price: price,
-        ticket_gst: gstAmount,
-        ticket_total: total,
-      });
-      return;
-    }
-    setStep(3);
-  }
-
-  async function createOrderAndOpenCheckout() {
-    setError("");
-    if (!form) {
-      setError("Please fill the form first.");
-      return;
-    }
-    const amount = Number(ticketMeta.total || ticketMeta.price || 0);
-    if (!amount || amount <= 0) {
-      setError("Invalid payment amount.");
-      return;
-    }
-    try {
-      const payload = {
-        amount,
-        currency: "INR",
-        description: `Exhibitor Ticket - ${ticketCategory}`,
-        reference_id: form.email || `guest-${Date.now()}`,
-        metadata: { ticketCategory, email: form.email || "" },
-      };
-      const res = await fetch(apiUrl("/api/payment/create-order"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "69420",
-        },
-        body: JSON.stringify(payload),
-      });
-      const js = await res.json().catch(() => ({}));
-      if (!res.ok || !js.success) {
-        setError(js.error || "Failed to create payment order");
-        return;
-      }
-      const checkoutUrl =
-        js.checkoutUrl ||
-        js.longurl ||
-        js.raw?.payment_request?.longurl ||
-        js.raw?.longurl;
-      if (!checkoutUrl) {
-        setError("Payment provider did not return a checkout URL.");
-        return;
-      }
-      const w = window.open(checkoutUrl, "_blank", "noopener,noreferrer");
-      if (!w) {
-        setError("Popup blocked. Allow popups to continue payment.");
-        return;
-      }
-
-      let attempts = 0;
-      const poll = setInterval(async () => {
-        attempts += 1;
-        try {
-          const st = await fetch(
-            apiUrl(
-              `/api/payment/status?reference_id=${encodeURIComponent(
-                String(payload.reference_id)
-              )}`
-            ),
-            { headers: { "ngrok-skip-browser-warning": "69420" } }
-          );
-          if (!st.ok) return;
-          const js2 = await st.json().catch(() => ({}));
-          const status = (js2.status || "").toString().toLowerCase();
-          if (["paid", "captured", "completed", "success"].includes(status)) {
-            clearInterval(poll);
-            try {
-              if (w && !w.closed) w.close();
-            } catch {}
-            const providerPaymentId =
-              js2.record?.provider_payment_id ||
-              js2.record?.payment_id ||
-              js2.record?.id ||
-              null;
-            setTxId(providerPaymentId || "");
-            await finalizeSave({
-              ticket_category: ticketCategory,
-              ticket_price: ticketMeta.price,
-              ticket_gst: ticketMeta.gstAmount,
-              ticket_total: ticketMeta.total,
-            });
-          } else if (["failed", "cancelled", "void"].includes(status)) {
-            clearInterval(poll);
-            try {
-              if (w && !w.closed) w.close();
-            } catch {}
-            setError("Payment failed or cancelled. Please retry.");
-          } else if (attempts > 40) {
-            clearInterval(poll);
-            setError(
-              "Payment not confirmed yet. If you completed payment, wait a bit and retry."
-            );
-          }
-        } catch (e) {}
-      }, 3000);
-    } catch (e) {
-      console.error("createOrderAndOpenCheckout error", e);
-      setError("Payment initiation failed.");
-    }
-  }
-
-  async function uploadProofFile(file) {
-    if (!file) return "";
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const r = await fetch(apiUrl("/api/upload-asset"), {
-        method: "POST",
-        headers: { "ngrok-skip-browser-warning": "69420" },
-        body: fd,
-      });
-      if (!r.ok) {
-        console.warn("proof upload failed", await r.text().catch(() => ""));
-        return "";
-      }
-      const js = await r.json().catch(() => null);
-      return js?.imageUrl || js?.fileUrl || js?.url || js?.path || "";
-    } catch (e) {
-      console.warn("uploadProofFile failed", e);
-      return "";
-    }
-  }
-
-  async function finalizeSave({
-    ticket_category,
-    ticket_price = 0,
-    ticket_gst = 0,
-    ticket_total = 0,
-  } = {}) {
+  async function finalizeSave() {
     setError("");
     const companyCandidates = [
       "companyName",
@@ -824,9 +500,6 @@ export default function Exhibitors() {
       companyValue = findFieldValue(form._rawForm, companyCandidates);
     companyValue = companyValue || "";
 
-    let proofUrl = "";
-    if (proofFile) proofUrl = await uploadProofFile(proofFile);
-
     const payload = {
       name: form.name || form.fullName || "",
       email: form.email || "",
@@ -837,12 +510,6 @@ export default function Exhibitors() {
       other_details: form.other_details || form.otherDetails || "",
       purpose: form.purpose || "",
       slots: Array.isArray(form.slots) ? form.slots : [],
-      ticket_category: ticket_category || ticketCategory || null,
-      ticket_price,
-      ticket_gst,
-      ticket_total,
-      txId: txId || null,
-      payment_proof_url: proofUrl || null,
       termsAccepted: !!form.termsAccepted,
       _rawForm: form,
     };
@@ -854,58 +521,8 @@ export default function Exhibitors() {
         scheduleReminder(json.insertedId, config?.eventDetails?.date).catch(
           () => {}
         );
-        let pdf = null;
-        try {
-          if (typeof generateVisitorBadgePDF === "function") {
-            pdf = await generateVisitorBadgePDF(
-              { ...payload, id: json.insertedId },
-              config?.badgeTemplateUrl || "",
-              {
-                includeQRCode: true,
-                qrPayload: {
-                  n: payload.name,
-                  e: payload.email,
-                  c: json?.ticket_code || payload.ticket_code || "",
-                },
-                event: config?.eventDetails || {},
-              }
-            );
-          }
-        } catch (e) {
-          console.warn("PDF gen failed", e);
-          pdf = null;
-        }
-
-        (async () => {
-          try {
-            await sendTemplatedAckEmail(
-              payload,
-              json.insertedId,
-              config?.eventDetails || {},
-              config?.images || [],
-              pdf,
-              config
-            );
-          } catch (e) {
-            console.warn("Ack email failed", e);
-          }
-        })();
-      } else {
-        (async () => {
-          try {
-            await sendTemplatedAckEmail(
-              payload,
-              null,
-              config?.eventDetails || {},
-              config?.images || [],
-              null,
-              config
-            );
-          } catch (e) {
-            console.warn("Ack email failed", e);
-          }
-        })();
       }
+
       await saveStep(
         "registration",
         { form },
@@ -918,14 +535,6 @@ export default function Exhibitors() {
     }
   }
 
-  function handlePaymentProofSubmitted() {
-    finalizeSave({
-      ticket_category: ticketCategory,
-      ticket_price: ticketMeta.price,
-      ticket_gst: ticketMeta.gstAmount,
-      ticket_total: ticketMeta.total,
-    });
-  }
   // Redirect to main website after successful registration
   useEffect(() => {
     if (step === 4) {
@@ -1013,40 +622,6 @@ export default function Exhibitors() {
                   required: !!config?.termsRequired,
                 }}
               />
-            </div>
-          )}
-
-          {!loading && step === 2 && (
-            <div className="mx-auto w-full max-w-4xl">
-              <TicketCategorySelector
-                role="exhibitors"
-                value={ticketCategory}
-                onChange={handleTicketSelect}
-              />
-            </div>
-          )}
-
-          {!loading && step === 3 && (
-            <div className="mx-auto w-full max-w-2xl">
-              <ManualPaymentStep
-                ticketType={ticketCategory}
-                ticketPrice={ticketMeta.total || ticketMeta.price || 0}
-                onProofUpload={handlePaymentProofSubmitted}
-                onTxIdChange={(val) => setTxId(val)}
-                txId={txId}
-                proofFile={proofFile}
-                setProofFile={setProofFile}
-                apiBase={apiBase}
-              />
-              <div className="flex justify-center mt-4">
-                <button
-                  className="px-6 py-2 bg-[#196e87] text-white rounded"
-                  onClick={() => createOrderAndOpenCheckout()}
-                  disabled={!ticketMeta.total || ticketMeta.total <= 0}
-                >
-                  Pay & Complete
-                </button>
-              </div>
             </div>
           )}
 
