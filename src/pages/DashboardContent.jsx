@@ -5,6 +5,7 @@ import AdminExhibitor from "../pages/AdminExhibitor";
 import AdminPartner from "../pages/AdminPartner";
 import DashboardStats from "../components/DashboardStats";
 import DashboardSection from "../components/DashboardSection";
+import AddRegistrantModal from "../components/AddRegistrantModal";
 
 const apiEndpoints = [
   { label: "Visitors", url: "/api/visitors", configUrl: "/api/visitor-config" },
@@ -110,6 +111,10 @@ export default function DashboardContent() {
 
   const [pendingPremium, setPendingPremium] = useState(false);
   const [newIsPremium, setNewIsPremium] = useState(false);
+
+  const [addRegistrantOpen, setAddRegistrantOpen] = useState(false);
+
+  const [resendLoadingId, setResendLoadingId] = useState(null);
 
   const mountedRef = useRef(true);
   const apiMap = useRef(
@@ -227,49 +232,6 @@ export default function DashboardContent() {
     setEditOpen(true);
   }
 
-  // ADD NEW: ensure modalColumns has fields even when configs missing
-  function handleAddNew(table, premium = false, configCols = null) {
-    setEditTable(table);
-    setIsCreating(true);
-    setEditRow(null);
-
-    // If caller provided configCols (from DashboardSection fetch), use it directly.
-    if (Array.isArray(configCols) && configCols.length > 0) {
-      // normalize to objects accepted by EditModal
-      const normalizedCols = configCols.map((c) => {
-        if (typeof c === "string") return { name: c, label: prettifyKey(c), type: "text" };
-        return { name: c.name || c.key, label: c.label || prettifyKey(c.name || c.key), type: c.type || "text", options: c.options || [], required: !!c.required };
-      });
-      setModalColumns(normalizedCols);
-    } else {
-      // existing fallback behavior (infer from configs/rawReport/defaults)
-      let cfg = (configs[table] && (configs[table].fields || configs[table].columns)) || null;
-      if (!cfg && rawReport[table] && rawReport[table].length > 0) {
-        const sample = rawReport[table][0];
-        const keys = Object.keys(sample).filter(k => !HIDDEN_FIELDS.has(k));
-        cfg = keys.map(k => ({ name: k, label: prettifyKey(k), type: 'text' }));
-      }
-      if (!cfg || cfg.length === 0) {
-        const defaultsMap = {
-          visitors: ["name", "email", "company", "mobile"],
-          exhibitors: ["company", "name", "email", "mobile"],
-          partners: ["company", "name", "email", "mobile"],
-          speakers: ["name", "email", "company"],
-          awardees: ["name", "email", "company"],
-        };
-        const keys = defaultsMap[table] || ["name", "email", "company"];
-        cfg = keys.map(k => ({ name: k, label: prettifyKey(k), type: 'text' }));
-      }
-      // filter out ticket/payment/id/created fields for create
-      const normalizedCols = cfg.map(c => (typeof c === 'string' ? { name: c, label: prettifyKey(c), type: 'text' } : { name: c.name || c.key, label: c.label || prettifyKey(c.name || c.key), type: c.type || 'text', options: c.options || [], required: !!c.required })).filter(c => !shouldHideOnCreate(c.name));
-      setModalColumns(normalizedCols);
-    }
-
-    setPendingPremium(false);
-    setNewIsPremium(!!premium);
-    setEditOpen(true);
-  }
-
   async function handleDelete(table, displayRow) {
     if (!table || !displayRow) return;
     const raws = rawReport[table] || [];
@@ -305,12 +267,14 @@ export default function DashboardContent() {
     }
   }
 
-  async function handleEditSave(updatedRowRaw) {
-    if (!editTable) return;
+  // onSave now simply creates/updates via existing backend endpoints.
+  // The backend (for visitors/speakers/awardees) will generate tickets and send emails if implemented server-side.
+  async function handleEditSave(updatedRowRaw /*, opts ignored - server handles generation */) {
+    if (!editTable) return null;
     const base = apiMap.current[editTable];
     if (!base) {
       setActionMsg("Unknown table");
-      return;
+      return null;
     }
     try {
       let url = buildApiUrl(base);
@@ -319,7 +283,7 @@ export default function DashboardContent() {
         const idVal = updatedRowRaw.id || updatedRowRaw._id || updatedRowRaw.ID || "";
         if (!idVal) {
           setActionMsg("Missing id for update");
-          return;
+          return null;
         }
         url = buildApiUrl(`${base}/${encodeURIComponent(String(idVal))}`);
         method = "PUT";
@@ -330,17 +294,39 @@ export default function DashboardContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updatedRowRaw),
       });
+
+      let json = null;
+      try {
+        json = await res.json().catch(() => null);
+      } catch (e) {
+        json = null;
+      }
+
       if (res.ok) {
-        setActionMsg(isCreating ? `Created new ${editTable}` : `Updated ${editTable}`);
+        let message = isCreating ? `Created new ${editTable}` : `Updated ${editTable}`;
+        if (json) {
+          if (json.ticket_code) message += ` • Ticket: ${json.ticket_code}`;
+          if (json.saved && json.saved.ticket_code) message += ` • Ticket: ${json.saved.ticket_code}`;
+          if (json.mail && (json.mail.ok || json.mail.info || json.mail.error)) {
+            if (json.mail.ok) message += ` • Email sent`;
+            else message += ` • Email result: ${json.mail.error || JSON.stringify(json.mail)}`;
+          } else if (json.mailError) {
+            message += ` • Email error: ${json.mailError}`;
+          }
+        }
+        setActionMsg(message);
         setEditOpen(false);
         await fetchAll();
+        return json;
       } else {
-        const body = await res.text().catch(() => null);
-        setActionMsg(`Failed to save: ${body || res.status}`);
+        const bodyText = json && json.error ? json.error : (typeof json === "string" ? json : null) || (await res.text().catch(() => null));
+        setActionMsg(`Failed to save: ${bodyText || res.status}`);
+        return null;
       }
     } catch (e) {
       console.error("save error", e);
       setActionMsg(`Error saving ${editTable}: ${e.message || e}`);
+      return null;
     }
   }
 
@@ -382,6 +368,51 @@ export default function DashboardContent() {
     }
   }
 
+  // === Resend email handler (frontend triggers backend resend endpoint) ===
+  // This calls POST {API_BASE}{basePath}/{id}/resend-email where basePath comes from apiMap.current[table]
+  async function handleResend(table, row) {
+    if (!table || !row) return;
+    const idVal = row.id || row._id || row.ID || "";
+    if (!idVal) {
+      setActionMsg("Cannot resend: missing id");
+      return;
+    }
+    const basePath = apiMap.current[table];
+    if (!basePath) {
+      setActionMsg("Cannot resend: unknown table endpoint");
+      return;
+    }
+    const url = buildApiUrl(`${basePath}/${encodeURIComponent(String(idVal))}/resend-email`);
+    try {
+      setResendLoadingId(idVal);
+      setActionMsg(`Resending email for ${table} ${idVal}...`);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+      });
+      const js = await res.json().catch(() => null);
+      if (res.ok) {
+        if (js && js.mail && (js.mail.ok || js.mail.success)) {
+          setActionMsg(`Email resent to ${row.email || "recipient"} successfully`);
+        } else if (js && js.mail && js.mail.ok === false) {
+          setActionMsg(`Resend attempted but failed: ${js.mail.error || JSON.stringify(js.mail)}`);
+        } else {
+          setActionMsg(`Resend finished: ${JSON.stringify(js)}`);
+        }
+        // refresh that row in table to reflect mail/log state
+        handleRefreshRow(table, row);
+      } else {
+        const body = js && (js.error || js.message) ? (js.error || js.message) : (await res.text().catch(() => null));
+        setActionMsg(`Resend failed: ${body || res.status}`);
+      }
+    } catch (e) {
+      console.error("resend error", e);
+      setActionMsg(`Resend error: ${e && (e.message || e)}`);
+    } finally {
+      setResendLoadingId(null);
+    }
+  }
+
   const stats = useMemo(
     () => ({
       visitors: (report.visitors || []).length,
@@ -409,6 +440,14 @@ export default function DashboardContent() {
               >
                 Refresh All
               </button>
+
+              <button
+                onClick={() => setAddRegistrantOpen(true)}
+                className="px-3 py-2 border rounded text-sm bg-green-50 hover:bg-green-100"
+              >
+                Add Registrant
+              </button>
+
               <div className="text-sm text-gray-500">
                 Showing {Object.keys(report).reduce((s, k) => s + (report[k] || []).length, 0)} records
               </div>
@@ -427,7 +466,10 @@ export default function DashboardContent() {
               tableKey={key}
               configs={configs}
               onEdit={handleEdit}
-              onAddNew={handleAddNew}
+              // Provide onResend so DataTable / section can call it when the Resend button is clicked
+              onResend={(row) => handleResend(key, row)}
+              // Remove per-section "Add New" capability. Central AddRegistrantModal used instead.
+              onAddNew={null}
               onDelete={handleDelete}
               onRefreshRow={handleRefreshRow}
               setShowExhibitorManager={setShowExhibitorManager}
@@ -451,6 +493,23 @@ export default function DashboardContent() {
           newIsPremium={newIsPremium}
           setPendingPremium={setPendingPremium}
           setNewIsPremium={setNewIsPremium}
+        />
+
+        <AddRegistrantModal
+          open={addRegistrantOpen}
+          onClose={() => setAddRegistrantOpen(false)}
+          apiBase={API_BASE}
+          onCreated={async (createdDoc, collection) => {
+            // Refresh and show message (server should return ticket_code/mail info when applicable)
+            await fetchAll();
+            let msg = `Created in ${collection}`;
+            if (createdDoc) {
+              if (createdDoc.ticket_code) msg += ` • Ticket: ${createdDoc.ticket_code}`;
+              if (createdDoc.mail && createdDoc.mail.ok) msg += ` • Email sent`;
+              if (createdDoc.mailError) msg += ` • Email error: ${createdDoc.mailError}`;
+            }
+            setActionMsg(msg);
+          }}
         />
 
         {deleteOpen && (
