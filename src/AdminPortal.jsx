@@ -215,8 +215,8 @@ export default function RailTransExpoHomepage() {
 
             {(eventDetails.date || eventDetails.time || eventDetails.venue) && (
               <div className="text-slate-600 mb-6 space-y-1">
-                {eventDetails.date && <div>📅 {eventDetails.date}</div>}
-                {eventDetails.venue && <div>📍 {eventDetails.venue}</div>}
+                {eventDetails.date && <div>{eventDetails.date}</div>}
+                {eventDetails.venue && <div> {eventDetails.venue}</div>}
               </div>
             )}
 

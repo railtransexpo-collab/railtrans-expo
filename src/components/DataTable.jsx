@@ -7,7 +7,9 @@ export default function DataTable({
   onEdit,
   onDelete,
   onRefreshRow,
+  onResend, // callback(row) -> may be async
   prettifyKey,
+  resendLoadingId, // new: id currently being resent
 }) {
   const [page, setPage] = useState(0);
   const [sortKey, setSortKey] = useState(null);
@@ -61,19 +63,22 @@ export default function DataTable({
                 </div>
               </th>
             ))}
-            <th className="px-3 py-2 border-b border-gray-300 text-center w-28">Actions</th>
+
+            <th className="px-3 py-2 border-b border-gray-300 text-center w-24">Admin</th>
+            <th className="px-3 py-2 border-b border-gray-300 text-center w-36">Actions</th>
           </tr>
         </thead>
         <tbody>
           {pagedData.length === 0 && (
             <tr>
-              <td colSpan={columns.length + 1} className="text-center py-6 text-gray-500">
+              <td colSpan={columns.length + 2} className="text-center py-6 text-gray-500">
                 No data available.
               </td>
             </tr>
           )}
           {pagedData.map((row, i) => {
             const keyId = row?.id ?? row?._id ?? row?.ID ?? i;
+            const isResending = String(resendLoadingId || "") === String(keyId);
             return (
               <tr key={String(keyId)} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
                 {columns.map(({ key }) => (
@@ -87,6 +92,15 @@ export default function DataTable({
                       : (row?.[key] ?? "")}
                   </td>
                 ))}
+
+                <td className="px-2 py-2 border-b border-gray-200 text-center">
+                  {row && (row.added_by_admin || row.addedByAdmin || row.addedBy || false) ? (
+                    <span className="inline-block bg-green-100 text-green-800 px-2 py-0.5 rounded-full text-xs font-medium">Admin</span>
+                  ) : (
+                    <span className="inline-block bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs">—</span>
+                  )}
+                </td>
+
                 <td className="px-2 py-2 border-b border-gray-200 text-center whitespace-nowrap">
                   <button
                     className="mr-2 text-blue-600 hover:underline text-xs"
@@ -95,6 +109,7 @@ export default function DataTable({
                   >
                     Edit
                   </button>
+
                   <button
                     className="mr-2 text-red-600 hover:underline text-xs"
                     onClick={() => typeof onDelete === "function" && onDelete(row)}
@@ -102,13 +117,25 @@ export default function DataTable({
                   >
                     Delete
                   </button>
-                  <button
-                    className="text-gray-600 hover:underline text-xs"
-                    onClick={() => typeof onRefreshRow === "function" && onRefreshRow(row)}
-                    title="Refresh this row"
-                  >
-                    ↻
-                  </button>
+
+                  {typeof onResend === "function" ? (
+                    <button
+                      className={`mr-2 text-indigo-600 hover:underline text-xs ${isResending ? "opacity-60 cursor-not-allowed" : ""}`}
+                      onClick={() => { if (!isResending) onResend(row); }}
+                      title="Resend Email"
+                      disabled={isResending}
+                    >
+                      {isResending ? "Sending..." : "Resend"}
+                    </button>
+                  ) : (
+                    <button
+                      className="text-gray-600 hover:underline text-xs"
+                      onClick={() => typeof onRefreshRow === "function" && onRefreshRow(row)}
+                      title="Refresh this row"
+                    >
+                      ↻
+                    </button>
+                  )}
                 </td>
               </tr>
             );
