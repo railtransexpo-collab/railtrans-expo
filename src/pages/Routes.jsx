@@ -23,6 +23,7 @@ import AdminLogin from "../components/AdminLogin";
 import TicketDownload from "./TicketDownload";
 import TicketUpgrade from "./TicketUpgrade";
 import EventDetailsAdmin from "./EventDetailsAdmin";
+import CouponsAdmin from "./CouponsAdmin";
 
 // Simple placeholders (if you need them)
 function Registrations() {
@@ -120,6 +121,15 @@ export default function AppRoutes() {
             </AdminRoute>
           }
         />
+        <Route
+          path="/coupons-admin"
+          element={
+            <AdminRoute>
+              <CouponsAdmin />
+            </AdminRoute>
+          }
+        />
+       
 
         {/* Data admin pages */}
         <Route
