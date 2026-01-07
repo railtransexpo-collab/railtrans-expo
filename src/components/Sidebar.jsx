@@ -35,6 +35,7 @@ export default function Sidebar({ open = false, onClose = () => {} }) {
     { label: "Topbar-setting", icon: HiOutlineUserCircle, path: "/admin/topbar-settings" },
     { label: "Event details", icon: HiOutlineTable, path: "/event-details-admin" },
     { label: "Ticket Categories", icon: HiOutlineTable, path: "/payments-summary" },
+    { label: "Coupons", icon: HiOutlineTable, path: "/coupons-admin" },
   ];
 
   const doLogout = React.useCallback(() => {
