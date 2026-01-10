@@ -551,7 +551,7 @@ export default function DashboardContent() {
               configs={configs}
               onEdit={handleEdit}
               // Provide onResend so DataTable / section can call it when the Resend button is clicked
-              onResend={handleResend}
+              onResend={(table, row) => handleResend(table, row)}
               // Pass current resend loading id so child can disable the button
               resendLoadingId={resendLoadingId}
               // Remove per-section "Add New" capability. Central AddRegistrantModal used instead.
