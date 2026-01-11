@@ -108,6 +108,51 @@ function shouldHideOnCreate(name = "") {
   return HIDE_ON_CREATE_RE.test(String(name));
 }
 
+/* Utility: safely extract array of rows from many response shapes */
+function extractRowsFromResponse(js) {
+  if (!js) return null;
+  if (Array.isArray(js)) return js;
+  // common shapes
+  if (js.data && Array.isArray(js.data)) return js.data;
+  if (js.rows && Array.isArray(js.rows)) return js.rows;
+  if (js.result && Array.isArray(js.result)) return js.result;
+  // nested data: { data: { rows: [...] } }
+  if (js.data && js.data.rows && Array.isArray(js.data.rows)) return js.data.rows;
+  // some endpoints return [rows, meta] -> handled earlier by fetchAll; try first array-like value
+  for (const v of Object.values(js)) {
+    if (Array.isArray(v)) return v;
+  }
+  // if it's an object with numeric keys 0..n treat as array-like
+  const numericKeys = Object.keys(js).filter((k) => /^\d+$/.test(k));
+  if (numericKeys.length > 0) {
+    // build array in key order
+    const arr = numericKeys
+      .sort((a, b) => Number(a) - Number(b))
+      .map((k) => js[k]);
+    return arr;
+  }
+  return null;
+}
+
+/* Defensive coercion for id-like values */
+function coerceToId(raw) {
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
+  try {
+    if (raw && typeof raw === "object") {
+      if (raw.$oid) return String(raw.$oid);
+      if (raw.toString && typeof raw.toString === "function") {
+        const s = raw.toString();
+        const m = s.match(/([a-f0-9]{24})/i);
+        if (m && m[1]) return m[1];
+        return String(s);
+      }
+    }
+  } catch (e) {}
+  return "";
+}
+
 export default function DashboardContent() {
   // store both sanitized display rows (report) and raw backend rows (rawReport)
   const [report, setReport] = useState({});
@@ -189,13 +234,24 @@ export default function DashboardContent() {
           try {
             const res = await fetch(buildApiUrl(url));
             let j = await res.json().catch(() => null);
-            if (Array.isArray(j) && j.length === 2 && Array.isArray(j[0]))
-              j = j[0];
-            if (j && typeof j === "object" && !Array.isArray(j))
-              j = j.data || j.rows || j;
-            const raw = normalizeData(j);
-            raws[label.toLowerCase()] = raw;
-            results[label.toLowerCase()] = raw.map(sanitizeRow);
+
+            // handle wrappers like [rows, meta]
+            if (Array.isArray(j) && j.length === 2 && Array.isArray(j[0])) j = j[0];
+
+            // some endpoints pack results under data/rows/result
+            let rows = extractRowsFromResponse(j);
+            if (!rows) {
+              // if j is object that contains data: {rows: [...]}, extract deeper
+              if (j && typeof j === "object") {
+                rows = extractRowsFromResponse(j.data) || extractRowsFromResponse(j.rows) || null;
+              }
+            }
+            if (!rows) {
+              // fallback to using j directly (normalizeData will wrap single object)
+              rows = normalizeData(j);
+            }
+            raws[label.toLowerCase()] = rows || [];
+            results[label.toLowerCase()] = (rows || []).map(sanitizeRow);
           } catch (e) {
             console.warn("fetch data", label, e);
             raws[label.toLowerCase()] = [];
@@ -283,7 +339,8 @@ export default function DashboardContent() {
   async function handleDeleteConfirm() {
     if (!deleteTable || !deleteRow) return;
     try {
-      const idVal = deleteRow.id || deleteRow._id || deleteRow.ID || "";
+      const idValRaw = deleteRow.id || deleteRow._id || deleteRow.ID || "";
+      const idVal = coerceToId(idValRaw);
       if (!idVal) throw new Error("missing id");
       const base = apiMap.current[deleteTable];
       if (!base) throw new Error("unknown base");
@@ -305,7 +362,7 @@ export default function DashboardContent() {
   }
 
   // onSave now simply creates/updates via existing backend endpoints.
-  // The backend (for visitors/speakers/awardees) will generate tickets and send emails if implemented server-side.
+  // The backend (for visitors/speakers/awardees) should generate tickets and send emails only via explicit /resend-email.
   async function handleEditSave(
     updatedRowRaw /*, opts ignored - server handles generation */
   ) {
@@ -319,14 +376,21 @@ export default function DashboardContent() {
       let url = buildApiUrl(base);
       let method = "POST";
       if (!isCreating) {
-        const idVal =
-          updatedRowRaw.id || updatedRowRaw._id || updatedRowRaw.ID || "";
+        // defensive id coercion
+        const idValRaw =
+          updatedRowRaw.id ?? updatedRowRaw._id ?? updatedRowRaw.ID ?? "";
+        const idVal = coerceToId(idValRaw);
         if (!idVal) {
           setActionMsg("Missing id for update");
           return null;
         }
         url = buildApiUrl(`${base}/${encodeURIComponent(String(idVal))}`);
         method = "PUT";
+      } else {
+        // If creating from admin dashboard, mark as admin-created so UI shows Admin badge
+        try {
+          updatedRowRaw.added_by_admin = true;
+        } catch {}
       }
 
       const res = await fetch(url, {
@@ -387,7 +451,8 @@ export default function DashboardContent() {
     if (!table || !displayRow) return;
     try {
       const raws = rawReport[table] || [];
-      const idVal = displayRow.id || displayRow._id || displayRow.ID || "";
+      const idValRaw = displayRow.id || displayRow._id || displayRow.ID || "";
+      const idVal = coerceToId(idValRaw);
       if (!idVal) {
         setActionMsg("Cannot refresh: missing id");
         return;
@@ -435,7 +500,8 @@ export default function DashboardContent() {
   // This calls POST {API_BASE}{basePath}/{id}/resend-email where basePath comes from apiMap.current[table]
   async function handleResend(table, row) {
     if (!table || !row) return;
-    const idVal = row.id || row._id || row.ID || "";
+    const idValRaw = row.id || row._id || row.ID || "";
+    const idVal = coerceToId(idValRaw);
     if (!idVal) {
       setActionMsg("Cannot resend: missing id");
       return;
