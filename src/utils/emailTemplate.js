@@ -283,7 +283,8 @@ export async function buildTicketEmail({
   const resolvedLogo = normalizeForEmailUrl(chosenLogoSource, effectiveFrontend) || "";
 
   const resolvedBadgePreview = normalizeForEmailUrl(badgePreviewUrl || "", effectiveFrontend);
-  const resolvedDownload = normalizeForEmailUrl(downloadUrl || "", effectiveFrontend) || `${effectiveFrontend}/ticket-download?entity=${encodeURIComponent(entity)}&${id ? `id=${encodeURIComponent(String(id))}` : `ticket_code=${encodeURIComponent(String(form?.ticket_code || ""))}`}`;
+  const resolvedDownload =
+  `${process.env.BACKEND_URL}/api/tickets/download/${entity}/${id}`;
 
   let resolvedUpgrade = normalizeForEmailUrl(upgradeUrl || "", effectiveFrontend);
   if (entity === "visitors" && !resolvedUpgrade) {
