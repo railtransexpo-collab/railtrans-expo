@@ -24,15 +24,46 @@ function normalizeData(d) {
   return [];
 }
 
+// sanitizeRow: preserve booleans/numbers and expose id/_id strings when present
 function sanitizeRow(row) {
   if (!row || typeof row !== "object") return {};
   const out = {};
+
+  // Preserve id/_id as string if present on raw doc (helps Edit/Refresh)
+  if (row._id !== undefined && row._id !== null) {
+    try {
+      out._id = typeof row._id === "string" ? row._id : (row._id.$oid ? String(row._id.$oid) : String(row._id));
+    } catch {
+      out._id = String(row._id);
+    }
+    // also provide id for convenience
+    out.id = out._id;
+  } else if (row.id !== undefined && row.id !== null) {
+    // if backend already provided id string
+    out.id = String(row.id);
+    out._id = out.id;
+  }
+
   for (const k of Object.keys(row)) {
+    // skip internal mongo _id because we've already exposed it above
+    if (k === "_id") continue;
+
     const v = row[k];
     if (v === null || typeof v === "undefined") {
       out[k] = "";
       continue;
     }
+
+    if (typeof v === "boolean") {
+      out[k] = v;
+      continue;
+    }
+
+    if (typeof v === "number") {
+      out[k] = v;
+      continue;
+    }
+
     if (typeof v === "object") {
       if (v.name || v.full_name || v.email || v.company) {
         const parts = [];
@@ -48,7 +79,10 @@ function sanitizeRow(row) {
           out[k] = String(v);
         }
       }
-    } else out[k] = String(v);
+      continue;
+    }
+
+    out[k] = String(v);
   }
   return out;
 }
@@ -81,7 +115,6 @@ function prettifyKey(k) {
     .join(" ");
 }
 
-// pattern used to detect fields we will hide on "Add New"
 const HIDE_ON_CREATE_RE = /(ticket|tx|transaction|payment|paid|(^id$)|id$|created(_at)?|updated(_at)?|timestamp|_at)$/i;
 function shouldHideOnCreate(name = "") {
   if (!name) return false;
@@ -89,14 +122,13 @@ function shouldHideOnCreate(name = "") {
 }
 
 export default function DashboardContent() {
-  // store both sanitized display rows (report) and raw backend rows (rawReport)
   const [report, setReport] = useState({});
   const [rawReport, setRawReport] = useState({});
   const [configs, setConfigs] = useState({});
   const [loading, setLoading] = useState(true);
 
   const [editOpen, setEditOpen] = useState(false);
-  const [editRow, setEditRow] = useState(null); // raw row for modal
+  const [editRow, setEditRow] = useState(null);
   const [modalColumns, setModalColumns] = useState([]);
   const [editTable, setEditTable] = useState("");
   const [isCreating, setIsCreating] = useState(false);
@@ -201,7 +233,6 @@ export default function DashboardContent() {
 
   // === Handlers ===
 
-  // open modal for edit: find raw object by id and pass to modal
   function handleEdit(table, displayRow) {
     setEditTable(table);
     setIsCreating(false);
@@ -209,6 +240,8 @@ export default function DashboardContent() {
     const raws = rawReport[table] || [];
     const idKeys = ["id", "_id", "ID", "Id"];
     let raw = null;
+
+    // try direct id match using sanitized displayRow.id/_id (we populate id in sanitizeRow)
     for (const r of raws) {
       for (const k of idKeys) {
         if (r && r[k] !== undefined && String(r[k]) === String(displayRow[k])) {
@@ -218,41 +251,121 @@ export default function DashboardContent() {
       }
       if (raw) break;
     }
+
+    // fallback match by email
     if (!raw && displayRow && displayRow.email) {
-      raw = raws.find((r) => r && String(r.email || r.data?.email || r.form?.email || "").toLowerCase() === String(displayRow.email).toLowerCase());
+      raw = raws.find(
+        (r) =>
+          r &&
+          String(r.email || r.data?.email || r.form?.email || "").toLowerCase() ===
+            String(displayRow.email).toLowerCase()
+      );
     }
+
     if (!raw) raw = displayRow || null;
 
-    // Build modalColumns from configs if available (normalize shape expected by EditModal)
+    // Build modal columns robustly (promote raw.data or raw.form, infer types)
+    function inferFieldFromSample(name, sample, cfgEntry = null) {
+      const out = { name, label: prettifyKey(name), type: "text", options: [], required: false, showIf: null };
+
+      if (cfgEntry) {
+        out.label = cfgEntry.label || out.label;
+        out.type = (cfgEntry.type || out.type).toLowerCase();
+        out.options = cfgEntry.options || cfgEntry.choices || cfgEntry.values || cfgEntry.enum || cfgEntry.allowedValues || cfgEntry.items || [];
+        out.required = !!cfgEntry.required;
+        out.showIf = cfgEntry.showIf || null;
+        return out;
+      }
+
+      if (typeof sample === "boolean") out.type = "checkbox";
+      else if (typeof sample === "number") out.type = "number";
+      else if (Array.isArray(sample)) {
+        out.type = "select";
+        out.options = sample.map((v) => (typeof v === "object" ? (v.value ?? v.label ?? String(v)) : v));
+      } else if (typeof sample === "string") {
+        out.type = sample.length > 200 ? "textarea" : "text";
+      } else if (sample && typeof sample === "object") {
+        const keys = Object.keys(sample || {});
+        const hasPrimitives = keys.some((k) => ["string", "number", "boolean"].includes(typeof sample[k]));
+        out.type = hasPrimitives ? "text" : "textarea";
+      } else {
+        out.type = "text";
+      }
+      return out;
+    }
+
     let configCols = null;
     try {
       const cfg = configs[table] || {};
-      // prefer .config.fields or .fields or .columns
       const src = cfg?.config?.fields || cfg?.fields || cfg?.columns || null;
       if (Array.isArray(src)) {
-        configCols = src.map((c) => {
-          return {
-            name: c.name || c.key || c.field || c.id,
-            label: c.label || c.name || c.key || (c.labelText || c.title) || (c.name || c.key),
-            type: c.type || (c.options ? "select" : "text"),
-            options: c.options || c.choices || c.values || [],
-            required: !!c.required,
-            showIf: c.showIf || null,
-          };
-        });
+        configCols = src.map((c) => ({
+          name: c.name || c.key || c.field || c.id,
+          label: c.label || c.name || c.key || (c.title || c.labelText || c.name || c.key),
+          type: (c.type || (c.options ? "select" : "text")).toLowerCase(),
+          options: c.options || c.choices || c.values || c.enum || c.allowedValues || c.items || [],
+          required: !!c.required,
+          showIf: c.showIf || null,
+        }));
       }
     } catch (e) {
       console.warn("normalize config cols", e);
       configCols = null;
     }
 
-    // fallback: if configCols not available, but raw exists use keys to build simple columns
-    if (!configCols && raw) {
-      configCols = Object.keys(raw || {}).map((k) => ({ name: k, label: prettifyKey(k), type: "text", options: [] }));
-    }
-    if (!configCols) configCols = [];
+    let finalCols = null;
 
-    setModalColumns(configCols);
+    if (Array.isArray(configCols) && configCols.length > 0) {
+      finalCols = configCols;
+    } else if (raw && typeof raw === "object") {
+      const promoted = raw.data && typeof raw.data === "object" ? raw.data
+        : raw.form && typeof raw.form === "object" ? raw.form
+        : null;
+
+      const cols = [];
+
+      if (promoted) {
+        for (const key of Object.keys(promoted)) {
+          const sample = promoted[key];
+          cols.push(inferFieldFromSample(key, sample, null));
+        }
+      }
+
+      const preferredTop = ["name", "email", "mobile", "company", "ticket_code", "ticket_category", "status", "role"];
+      for (const t of preferredTop) {
+        if ((promoted && Object.prototype.hasOwnProperty.call(promoted, t)) || Object.prototype.hasOwnProperty.call(raw, t)) {
+          if (!cols.find((c) => c.name === t)) {
+            const sample = (promoted && promoted[t] !== undefined) ? promoted[t] : raw[t];
+            cols.push(inferFieldFromSample(t, sample, null));
+          }
+        }
+      }
+
+      if (cols.length === 0) {
+        for (const k of Object.keys(raw)) {
+          if (k === "_id") continue;
+          cols.push(inferFieldFromSample(k, raw[k], null));
+        }
+      }
+
+      const seen = new Set();
+      finalCols = cols.filter((c) => {
+        if (!c || !c.name) return false;
+        if (seen.has(c.name)) return false;
+        seen.add(c.name);
+        return true;
+      });
+    } else {
+      finalCols = [];
+    }
+
+    // debug to verify
+    // eslint-disable-next-line no-console
+    console.debug("[EditModal debug] modalColumns:", finalCols);
+    // eslint-disable-next-line no-console
+    console.debug("[EditModal debug] editRow (raw):", raw);
+
+    setModalColumns(finalCols);
     setEditRow(raw);
     setEditOpen(true);
   }
@@ -292,7 +405,6 @@ export default function DashboardContent() {
     }
   }
 
-  // onSave creates/updates via backend endpoints.
   async function handleEditSave(updatedRowRaw) {
     if (!editTable) return null;
     const base = apiMap.current[editTable];
@@ -309,7 +421,6 @@ export default function DashboardContent() {
           setActionMsg("Missing id for update");
           return null;
         }
-        // coerce _id to string if object
         const coercedId = (typeof idVal === "object" && idVal !== null) ? (idVal.$oid || idVal.toString()) : idVal;
         url = buildApiUrl(`${base}/${encodeURIComponent(String(coercedId))}`);
         method = "PUT";
@@ -363,9 +474,15 @@ export default function DashboardContent() {
     try {
       const raws = rawReport[table] || [];
       const idVal = displayRow.id || displayRow._id || displayRow.ID || "";
-      if (!idVal) { setActionMsg("Cannot refresh: missing id"); return; }
+      if (!idVal) {
+        setActionMsg("Cannot refresh: missing id");
+        return;
+      }
       const base = apiMap.current[table];
-      if (!base) { setActionMsg("Unknown table"); return; }
+      if (!base) {
+        setActionMsg("Unknown table");
+        return;
+      }
       const url = buildApiUrl(`${base}/${encodeURIComponent(String(idVal))}`);
       const res = await fetch(url);
       if (!res.ok) {
@@ -396,7 +513,6 @@ export default function DashboardContent() {
     }
   }
 
-  // Resend handler
   async function handleResend(table, row) {
     if (!table || !row) return;
     const idVal = row.id || row._id || row.ID || "";
@@ -422,7 +538,10 @@ export default function DashboardContent() {
         setActionMsg(`Email resent to ${row.email || "recipient"} successfully`);
         handleRefreshRow(table, row);
       } else {
-        const body = js && (js.error || js.message) ? (js.error || js.message) : (await res.text().catch(() => null));
+        const body =
+          js && (js.error || js.message)
+            ? js.error || js.message
+            : await res.text().catch(() => null);
         setActionMsg(`Resend failed: ${body || res.status}`);
       }
     } catch (e) {
@@ -452,12 +571,8 @@ export default function DashboardContent() {
             </div>
             <div className="flex items-center gap-3 justify-start md:justify-end">
               <button onClick={() => fetchAll()} className="px-3 py-2 border rounded text-sm bg-white hover:bg-gray-50">Refresh All</button>
-
               <button onClick={() => setAddRegistrantOpen(true)} className="px-3 py-2 border rounded text-sm bg-green-50 hover:bg-green-100">Add Registrant</button>
-
-              <div className="text-sm text-gray-500">
-                Showing {Object.keys(report).reduce((s, k) => s + (report[k] || []).length, 0)} records
-              </div>
+              <div className="text-sm text-gray-500">Showing {Object.keys(report).reduce((s, k) => s + (report[k] || []).length, 0)} records</div>
             </div>
           </div>
 
@@ -518,8 +633,15 @@ export default function DashboardContent() {
         />
 
         {deleteOpen && (
-          <DeleteModal open={deleteOpen} onClose={() => setDeleteOpen(false)} onConfirm={handleDeleteConfirm}
-            title="Delete record" message={`Delete "${deleteRow?.name || deleteRow?.id}"?`} confirmLabel="Delete" cancelLabel="Cancel" />
+          <DeleteModal
+            open={deleteOpen}
+            onClose={() => setDeleteOpen(false)}
+            onConfirm={handleDeleteConfirm}
+            title="Delete record"
+            message={`Delete "${deleteRow?.name || deleteRow?.id}"?`}
+            confirmLabel="Delete"
+            cancelLabel="Cancel"
+          />
         )}
 
         {showExhibitorManager && (
