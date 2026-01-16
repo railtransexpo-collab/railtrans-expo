@@ -459,7 +459,7 @@ export default function Visitors() {
   useEffect(() => {
     if (step === 4) {
       const timer = setTimeout(() => {
-        window.location.href = "https://www.railtransexpo.com/";
+        window.location.replace("https://www.railtransexpo.com/");
       }, 3000);
       return () => clearTimeout(timer);
     }
@@ -471,7 +471,9 @@ export default function Visitors() {
       <div className="min-h-screen w-full bg-white flex items-start justify-center p-4">
         <div className="w-full max-w-md">
           <Topbar />
-          {! loading && Array.isArray(config?.fields) ? (
+          
+          {/* Step 1: Registration Form */}
+          {!loading && step === 1 && Array.isArray(config?.fields) ? (
             <>
               <div className="mt-4">
                 <DynamicRegistrationForm
@@ -490,10 +492,12 @@ export default function Visitors() {
               </div>
               <div className="mt-3 mb-4" aria-hidden />
             </>
-          ) : (
+          ) : loading ? (
             <div className="text-center py-8">Loading...</div>
-          )}
-          {! loading && step === 2 && (
+          ) : null}
+          
+          {/* Step 2: Ticket Category Selection */}
+          {!loading && step === 2 && (
             <TicketCategorySelector
               role="visitors"
               value={ticketCategory}
@@ -506,6 +510,8 @@ export default function Visitors() {
               }}
             />
           )}
+          
+          {/* Step 3: Payment (if paid ticket) */}
           {step === 3 &&
             !/free|general|0/i.test(String(ticketCategory || "")) &&
             !processing && (
@@ -519,6 +525,8 @@ export default function Visitors() {
                 setProofFile={setProofFile}
               />
             )}
+          
+          {/* Step 3: Processing */}
           {step === 3 && processing && (
             <ProcessingCard
               title="Finalizing your registration…"
@@ -526,6 +534,8 @@ export default function Visitors() {
               note="If you paid in another tab, we will detect and continue automatically."
             />
           )}
+          
+          {/* Step 4: Thank You */}
           {step === 4 && (
             <div className="mt-4">
               <ThankYouMessage
@@ -534,7 +544,7 @@ export default function Visitors() {
               />
               {reminderScheduled && (
                 <div className="text-green-700 mt-3 text-center">
-                  Reminder scheduled for event date. 
+                  Reminder scheduled for event date.
                 </div>
               )}
               {reminderError && (
