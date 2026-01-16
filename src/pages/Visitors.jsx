@@ -14,10 +14,10 @@ const API_BASE = (
 ).replace(/\/$/, "");
 
 const FRONTEND_BASE = (
-  process.env. REACT_APP_FRONTEND_BASE ||
-  process.env. FRONTEND_BASE ||
+  process.env.REACT_APP_FRONTEND_BASE ||
+  process.env.FRONTEND_BASE ||
   window.__FRONTEND_BASE__ ||
-  (typeof window !== "undefined" && window. location
+  (typeof window !== "undefined" && window.location
     ? window.location.origin
     : "")
 ).replace(/\/$/, "");
@@ -42,18 +42,18 @@ function normalizeAdminUrl(url) {
           parsed.hostname === "127.0.0.1"
         ) {
           return (
-            FRONTEND_BASE. replace(/\/$/, "") +
+            FRONTEND_BASE.replace(/\/$/, "") +
             parsed.pathname +
             (parsed.search || "")
           );
         }
       } catch {}
-      return t. replace(/^http:/i, "https:");
+      return t.replace(/^http:/i, "https:");
     }
     return t;
   }
-  if (t.startsWith("/")) return FRONTEND_BASE. replace(/\/$/, "") + t;
-  return FRONTEND_BASE. replace(/\/$/, "") + "/" + t. replace(/^\//, "");
+  if (t.startsWith("/")) return FRONTEND_BASE.replace(/\/$/, "") + t;
+  return FRONTEND_BASE.replace(/\/$/, "") + "/" + t.replace(/^\//, "");
 }
 
 /* ---------- reminder helper ---------- */
@@ -78,7 +78,7 @@ async function scheduleReminderClient(entityId) {
     try {
       js = txt ? JSON.parse(txt) : null;
     } catch {}
-    if (! res.ok) {
+    if (!res.ok) {
       return { ok: false, status: res.status, body: js || txt };
     }
     return { ok: true, status: res.status, body: js || txt };
@@ -132,9 +132,9 @@ export default function Visitors() {
 
   const normalizeEvent = (raw = {}) => ({
     name: raw.name || raw.eventName || raw.title || "",
-    date: raw. date || raw.dates || "",
+    date: raw.date || raw.dates || "",
     venue: raw.venue || raw.location || "",
-    time: raw. time || raw.startTime || "",
+    time: raw.time || raw.startTime || "",
     tagline: raw.tagline || raw.subtitle || "",
   });
 
@@ -201,17 +201,17 @@ export default function Visitors() {
           url: "",
         };
       if (Array.isArray(normalized.images))
-        normalized.images = normalized. images.map((u) => normalizeAdminUrl(u));
+        normalized.images = normalized.images.map((u) => normalizeAdminUrl(u));
       else normalized.images = [];
       if (normalized.termsUrl)
-        normalized.termsUrl = normalizeAdminUrl(normalized. termsUrl);
+        normalized.termsUrl = normalizeAdminUrl(normalized.termsUrl);
       normalized.fields = Array.isArray(normalized.fields)
         ? normalized.fields.map((f) => {
-            if (! f || ! f.name) return f;
+            if (!f || !f.name) return f;
             const nameLabel = (f.name + " " + (f.label || "")).toLowerCase();
             const isEmailField = f.type === "email" || /email/.test(nameLabel);
             if (isEmailField) {
-              const fm = Object.assign({}, f. meta || {});
+              const fm = Object.assign({}, f.meta || {});
               if (fm.useOtp === undefined) fm.useOtp = true;
               return { ...f, meta: fm };
             }
@@ -371,9 +371,9 @@ export default function Visitors() {
     submittingRef.current = true;
     try {
       setProcessing(true);
-      if (config?. termsRequired && !form?. termsAccepted) {
+      if (config?.termsRequired && !form?.termsAccepted) {
         setError(
-          config?. termsRequiredMessage ||
+          config?.termsRequiredMessage ||
             "You must accept the terms and conditions to complete registration."
         );
         setProcessing(false);
@@ -551,7 +551,7 @@ export default function Visitors() {
 
   const bgImageUrl =
     config?.backgroundMedia?.type !== "video" && config?.backgroundMedia?.url
-      ?  normalizeAdminUrl(config. backgroundMedia.url)
+      ? normalizeAdminUrl(config.backgroundMedia.url)
       : null;
   const videoUrl =
     config?.backgroundMedia?.type === "video" && config?.backgroundMedia?.url
@@ -643,7 +643,7 @@ export default function Visitors() {
                 <div className="text-xl sm:text-2xl font-bold mb-1 text-center text-[#21809b]">
                   {(canonicalEvent &&
                     (canonicalEvent.date || canonicalEvent.dates)) ||
-                    config?.eventDetails?. date ||
+                    config?.eventDetails?.date ||
                     "Event Date"}
                 </div>
                 <div className="text-base sm:text-xl font-semibold text-center text-[#196e87]">
@@ -651,7 +651,7 @@ export default function Visitors() {
                     config?.eventDetails?.venue ||
                     "Event Venue"}
                 </div>
-                {(canonicalEvent && canonicalEvent. time) ||
+                {(canonicalEvent && canonicalEvent.time) ||
                 (config?.eventDetails && config.eventDetails.time) ? (
                   <div className="text-sm mt-2 text-center text-gray-700">
                     {(canonicalEvent && canonicalEvent.time) ||
