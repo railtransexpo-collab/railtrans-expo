@@ -88,20 +88,13 @@ function candidateUrlsForPath(path, frontendBase, apiBase) {
   return c;
 }
 
-/* safeFetchJson: works in browser and Node (tries node-fetch if needed) */
+/* safeFetchJson: works in browser (uses native fetch API) */
 async function safeFetchJson(url, opts = {}) {
-  let _fetch = typeof fetch !== "undefined" ? fetch : null;
-  if (!_fetch) {
-    try {
-      // eslint-disable-next-line global-require
-      const nf = require("node-fetch");
-      _fetch = nf && nf.default ? nf.default : nf;
-    } catch (e) {
-      throw new Error("fetch is not available in this environment. Install node-fetch or use Node 18+.");
-    }
+  if (typeof fetch === "undefined") {
+    throw new Error("fetch is not available in this environment. This code requires a browser environment.");
   }
 
-  const res = await _fetch(url, opts);
+  const res = await fetch(url, opts);
   const headers = res.headers || {};
   const ct = (typeof headers.get === "function" ? headers.get("content-type") : headers["content-type"]) || "";
   const text = await res.text().catch(() => "");

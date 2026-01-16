@@ -26,13 +26,6 @@ function apiUrl(path) {
 }
 
 /* safe parsing helpers reused on frontend */
-function tryParseJsonSafe(s) {
-  try { return JSON.parse(s); } catch (e) { return null; }
-}
-function looksLikeBase64(s) {
-  return typeof s === "string" && /^[A-Za-z0-9+/=]+$/.test(s.replace(/\s+/g, "")) && s.length % 4 === 0;
-}
-
 function extractTicketIdFromObject(obj) {
   if (!obj || typeof obj !== "object") return null;
   const keys = ["ticket_code","ticketCode","ticket_id","ticketId","ticket","code","c","id","t","tk"];

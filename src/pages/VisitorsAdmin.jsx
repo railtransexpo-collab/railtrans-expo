@@ -214,7 +214,6 @@ export default function VisitorsAdmin() {
   function updateImage(idx, value) { setConfig(prev => { const cfg = clone(prev); cfg.images[idx] = value ? normalizeAdminUrl(value) : ""; return cfg; }); }
   function deleteImage(idx) { setConfig(prev => { const cfg = clone(prev); cfg.images.splice(idx,1); return cfg; }); }
   function addImage() { setConfig(prev => { const cfg = clone(prev); cfg.images.push(""); return cfg; }); }
-  function updateEventDetail(key, value) { setConfig(prev => { const cfg = clone(prev); cfg.eventDetails = cfg.eventDetails || {}; cfg.eventDetails[key] = value; return cfg; }); }
 
   async function handleAssetUpload(e, key, idx = null, mediaType = "image") {
     const file = e.target.files && e.target.files[0];
