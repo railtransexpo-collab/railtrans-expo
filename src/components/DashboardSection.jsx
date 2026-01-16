@@ -3,8 +3,8 @@ import DataTable from "./DataTable";
 
 /**
  * DashboardSection
- * - Removed per-section "Add New" button because Add Registrant is centralized.
- * - Keeps "Manage" button for exhibitors/partners.
+ * - Removed per-section "Add New" button because Add Registrant is centralized. 
+ * - Keeps "Manage" button for exhibitors/partners. 
  */
 export default function DashboardSection({
   label,
@@ -15,7 +15,7 @@ export default function DashboardSection({
   onAddNew, // intentionally may be null now
   onDelete,
   onRefreshRow,
-  onResend, // callback to send/resend ticket
+  onResend, // callback to send/resend ticket - ALREADY BOUND TO TABLE KEY
   resendLoadingId,
   setShowExhibitorManager,
   setShowPartnerManager,
@@ -32,10 +32,10 @@ export default function DashboardSection({
     });
 
     // Prefer configured column order if available
-    let configCols = configs?.[tableKey]?.columns?.map((c) => c.key) || configs?.[tableKey]?.fields?.map((c) => c.name);
+    let configCols = configs?.[tableKey]?.columns?. map((c) => c.key) || configs?.[tableKey]?.fields?.map((c) => c.name);
     if (configCols && configCols.length > 0) {
-      const missing = [...keysSet].filter((k) => !configCols.includes(k));
-      configCols = [...configCols, ...missing];
+      const missing = [... keysSet].filter((k) => !configCols.includes(k));
+      configCols = [... configCols, ...missing];
     } else {
       configCols = [...keysSet];
     }
@@ -47,7 +47,7 @@ export default function DashboardSection({
       if (configCols.includes(p) && !seen.has(p)) { ordered.push(p); seen.add(p); }
     }
     for (const k of configCols) {
-      if (!seen.has(k)) { ordered.push(k); seen.add(k); }
+      if (! seen.has(k)) { ordered.push(k); seen.add(k); }
     }
 
     return ordered.map((k) => ({ key: k, label: prettifyKey(k) }));
@@ -55,7 +55,7 @@ export default function DashboardSection({
 
   const handleRowAction = useCallback(
     (action, row) => {
-      if (!row) return;
+      if (! row) return;
       if (action === "edit") {
         typeof onEdit === "function" && onEdit(tableKey, row);
       } else if (action === "delete") {
@@ -100,7 +100,7 @@ export default function DashboardSection({
           onEdit={(row) => handleRowAction("edit", row)}
           onDelete={(row) => handleRowAction("delete", row)}
           onRefreshRow={(row) => handleRowAction("refresh", row)}
-          onResend={(row) => typeof onResend === "function" && onResend(tableKey, row)}
+          onResend={(row) => typeof onResend === "function" && onResend(row)}
           resendLoadingId={resendLoadingId}
           showSendTicket={showSendTicket}
           prettifyKey={prettifyKey}

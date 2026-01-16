@@ -6,8 +6,9 @@ import ThankYouMessage from "../components/ThankYouMessage";
 /*
  Partners.jsx
  
- Flow:  Registration Form → Thank You
+ Flow:  Registration Form → Thank You → Auto-redirect (silent)
  Backend automatically sends ACK email after POST /api/partners
+ NOW WITH MOBILE VIEW SUPPORT
 */
 
 function getApiBaseFromEnvOrWindow() {
@@ -22,7 +23,7 @@ function getApiBaseFromEnvOrWindow() {
     process.env &&
     process.env.REACT_APP_API_BASE_URL
   )
-    return process.env.REACT_APP_API_BASE_URL.replace(/\/$/, "");
+    return process. env.REACT_APP_API_BASE_URL.replace(/\/$/, "");
   if (typeof window !== "undefined" && window.__API_BASE__)
     return String(window.__API_BASE__).replace(/\/$/, "");
   if (
@@ -49,7 +50,7 @@ function apiUrl(path) {
 }
 
 function normalizeAdminUrl(url) {
-  if (!url) return "";
+  if (! url) return "";
   const t = String(url).trim();
   if (!t) return "";
   if (/^https?:\/\//i.test(t)) return t;
@@ -70,7 +71,7 @@ function pickFirstString(obj, candidates = []) {
   for (const cand of candidates) {
     if (Object.prototype.hasOwnProperty. call(obj, cand)) {
       const v = obj[cand];
-      if (typeof v === "string" && v. trim()) return v.trim();
+      if (typeof v === "string" && v.trim()) return v.trim();
       if ((typeof v === "number" || typeof v === "boolean") && String(v).trim())
         return String(v).trim();
     }
@@ -155,7 +156,7 @@ const DEFAULT_PARTNER_FIELDS = [
     visible: true,
   },
   {
-    name:  "name",
+    name: "name",
     label: "Contact person",
     type: "text",
     required: true,
@@ -173,11 +174,11 @@ const DEFAULT_PARTNER_FIELDS = [
     name: "email",
     label: "Email",
     type: "email",
-    required: false,
+    required: true,
     visible: true,
   },
   {
-    name:  "designation",
+    name: "designation",
     label: "Designation",
     type: "text",
     required: false,
@@ -232,11 +233,11 @@ export default function Partners() {
   const [saving, setSaving] = useState(false);
   const [step, setStep] = useState(1);
   const [error, setError] = useState("");
-
   const [isMobile, setIsMobile] = useState(false);
 
+  // Mobile detection
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 640px)");
+    const mq = window.matchMedia("(max-width: 900px)");
     const onChange = () => setIsMobile(!! mq.matches);
     onChange();
     if (mq.addEventListener) mq.addEventListener("change", onChange);
@@ -264,7 +265,7 @@ export default function Partners() {
           setCanonicalEvent({
             name: val.name || "",
             date: val.date || val.dates || "",
-            venue: val.venue || "",
+            venue: val. venue || "",
             time: val.time || "",
             tagline: val.tagline || "",
           });
@@ -399,7 +400,7 @@ export default function Partners() {
       if (! key || key === "event-details")
         fetchCanonicalEvent().catch(() => {});
     };
-    window.addEventListener("partner-config-updated", onCfg);
+    window. addEventListener("partner-config-updated", onCfg);
     window.addEventListener("config-updated", onConfigUpdated);
     window.addEventListener("event-details-updated", fetchCanonicalEvent);
     return () => {
@@ -435,13 +436,13 @@ export default function Partners() {
 
       // Save partner (backend will send ACK email automatically)
       const payload = {
-        ...formData,
+        ... formData,
         termsAccepted: !!formData.termsAccepted,
         _rawForm: formData,
       };
 
       const json = await savePartnerApi(payload);
-      
+
       // Log completion
       try {
         await postJSON(apiUrl("/api/partners/step"), {
@@ -460,19 +461,78 @@ export default function Partners() {
     }
   }
 
+  // Redirect after thank you (silent, no countdown display)
   useEffect(() => {
     if (step === 2) {
       const timer = setTimeout(() => {
-        window.location.href = "https://www.railtransexpo.com/";
+        window.location.replace("https://www.railtransexpo.com/");
       }, 3000);
       return () => clearTimeout(timer);
     }
   }, [step]);
 
+  /* ---------- MOBILE RENDER ---------- */
+  if (isMobile) {
+    return (
+      <div className="min-h-screen w-full bg-white flex items-start justify-center p-4">
+        <div className="w-full max-w-md">
+          <Topbar />
+
+          {! loading && step === 1 && config?. fields ?  (
+            <>
+              <div className="mt-4">
+                <h2 className="text-xl font-bold text-[#21809b] mb-4 text-center">
+                  Partner Registration
+                </h2>
+                <DynamicRegistrationForm
+                  config={{ ... config, fields: config.fields }}
+                  form={form}
+                  setForm={setForm}
+                  onSubmit={handleFormSubmit}
+                  editable={true}
+                  saving={saving}
+                  terms={
+                    config && (config.termsUrl || config.termsText)
+                      ? {
+                          url: config.termsUrl,
+                          text: config.termsText,
+                          label: config.termsLabel || "Terms & Conditions",
+                          required: !!config.termsRequired,
+                        }
+                      : null
+                  }
+                />
+              </div>
+              <div className="mt-3 mb-4" aria-hidden />
+            </>
+          ) : loading ? (
+            <div className="text-center py-8">Loading... </div>
+          ) : null}
+
+          {step === 2 && (
+            <div className="mt-4">
+              <ThankYouMessage
+                email={form.email || ""}
+                messageOverride="Thank you for registering as a partner.  We have received your details and our team will review your request.  You will receive a confirmation email shortly."
+              />
+            </div>
+          )}
+
+          {error && (
+            <div className="text-red-600 mt-3 text-center text-sm">
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------- DESKTOP RENDER ---------- */
   return (
     <div className="min-h-screen w-full relative">
       {! isMobile &&
-      config?. backgroundMedia?.type === "video" &&
+      config?.backgroundMedia?.type === "video" &&
       config?.backgroundMedia?.url ? (
         <video
           src={config.backgroundMedia.url}
@@ -513,7 +573,7 @@ export default function Partners() {
             style={{ minHeight: 370 }}
           >
             <div className="sm:w-[60%] w-full flex items-center justify-center">
-              {loading ?  (
+              {loading ? (
                 <span className="text-[#21809b] text-2xl font-bold">
                   Loading images...
                 </span>
@@ -559,7 +619,7 @@ export default function Partners() {
                   </div>
 
                   {(canonicalEvent && canonicalEvent. tagline) ||
-                  config?. eventDetails?.tagline ?  (
+                  config?.eventDetails?.tagline ?  (
                     <div className="text-sm mt-2 text-center text-gray-700">
                       {(canonicalEvent && canonicalEvent. tagline) ||
                         config?.eventDetails?.tagline}
@@ -581,7 +641,7 @@ export default function Partners() {
           {! loading && step === 1 && config?.fields && (
             <div className="mx-auto w-full max-w-2xl">
               <DynamicRegistrationForm
-                config={{ ... config, fields: config.fields }}
+                config={{ ...config, fields: config. fields }}
                 form={form}
                 setForm={setForm}
                 onSubmit={handleFormSubmit}
@@ -590,9 +650,9 @@ export default function Partners() {
                 terms={
                   config && (config.termsUrl || config.termsText)
                     ? {
-                        url: config.termsUrl,
+                        url:  config.termsUrl,
                         text: config.termsText,
-                        label: config.termsLabel || "Terms & Conditions",
+                        label: config. termsLabel || "Terms & Conditions",
                         required: !!config.termsRequired,
                       }
                     : null
@@ -603,9 +663,9 @@ export default function Partners() {
 
           {step === 2 && (
             <div className="my-6">
-              <ThankYouMessage 
-                email={form.email || ""} 
-                messageOverride="Thank you for registering as a partner.  We have received your details and our team will review your request.  You will receive a confirmation email shortly."
+              <ThankYouMessage
+                email={form.email || ""}
+                messageOverride="Thank you for registering as a partner. We have received your details and our team will review your request. You will receive a confirmation email shortly."
               />
             </div>
           )}
