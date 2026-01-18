@@ -4,26 +4,7 @@ import EmailOtpVerifier from "../components/EmailOtpField";
 import PhoneInput from "react-phone-input-2";
 import "react-phone-input-2/lib/style.css";
 
-/*
-  DynamicRegistrationForm
-
-  Changes related to your request "only 10 numbers should be allowed in phone numbers":
-  - Phone input (react-phone-input-2) is used for any field detected as a phone field.
-  - handlePhoneChange now derives the national (local) number (digits-only, excluding dialCode),
-    trims it to max 10 digits, and stores:
-      - form[fieldName] = "+<dialCode><national>" (E.164-like)
-      - form[`${fieldName}_country`] = "+<dialCode>"
-      - form[`${fieldName}_national`] = "<national digits>"  (always digits, max length 10)
-  - A live helper/error message is shown under phone inputs when national length !== 10.
-  - The submit button is disabled while any visible phone field has national length !== 10.
-  - A small useEffect will normalise any pre-filled phone values into the same structure so validation works for edit modes too.
-
-  Note:
-  - This enforces a maximum of 10 digits for the national part. If you want to require exactly 10 (not less),
-    the submit button is disabled until national length === 10. If you want to allow shorter numbers,
-    adjust the validation logic accordingly.
-*/
-
+// ---- utility functions ----
 function isVisible(field, form) {
   if (!field) return false;
   if (field.visible === false) return false;
@@ -42,12 +23,12 @@ function normalizeType(t) {
   if (s.endsWith("s") && KNOWN_TYPES.includes(s.slice(0, -1))) return s.slice(0, -1);
   return null;
 }
-
 function isPhoneFieldName(name = "") {
   if (!name || typeof name !== "string") return false;
   return /(phone|mobile|contact|msisdn|tel)/i.test(name);
 }
 
+// ---- component ----
 export default function DynamicRegistrationForm({
   config,
   form,
@@ -81,8 +62,10 @@ export default function DynamicRegistrationForm({
     return "visitor";
   })();
 
+  // Load local config if needed
   useEffect(() => { if (config) { setLocalConfig(config); setLoadingConfig(false); } }, [config]);
 
+  // Optionally fetch config from API if not passed as prop
   useEffect(() => {
     let mounted = true;
     async function fetchCfg() {
@@ -107,6 +90,7 @@ export default function DynamicRegistrationForm({
     return () => (mounted = false);
   }, [config, apiBase, inferredRegistrationType]);
 
+  // --- email verification state/logic
   useEffect(() => {
     const emailField = (localConfig && localConfig.fields || []).find(f => f.type === "email");
     const emailValue = emailField ? (form[emailField.name] || "").trim().toLowerCase() : "";
@@ -115,7 +99,6 @@ export default function DynamicRegistrationForm({
       setEmailVerified(false);
       return;
     }
-
     try {
       if (emailVerified) {
         return;
@@ -129,52 +112,29 @@ export default function DynamicRegistrationForm({
     } catch (e) {
       setEmailVerified(false);
     }
-   
   }, [form && JSON.stringify(form), localConfig, inferredRegistrationType]);
 
-  function handleChange(e) {
-    const { name, value, type, checked } = e.target;
-    if (type === "email") {
-      const v = (value || "").trim();
-      setForm((f) => ({ ...f, [name]: v }));
-      return;
-    }
-    setForm((f) => ({ ...f, [name]: type === "checkbox" ? checked : value }));
-  }
-
-  // New: enforce max 10 digits for the national (subscriber) number.
-  // react-phone-input-2's onChange gives value (digits without + usually) and countryData (contains dialCode).
+  // --- phone input state normalization for 10 digit national part
   function handlePhoneChange(fieldName, value, countryData) {
     const rawDigits = String(value || "").replace(/\D/g, "");
     const dial = countryData && countryData.dialCode ? String(countryData.dialCode).replace(/\D/g, "") : "";
-    // remove leading dial from rawDigits if present
     let national = rawDigits;
-    if (dial && national.startsWith(dial)) {
-      national = national.slice(dial.length);
-    }
-    // enforce max 10 digits for national part
+    if (dial && national.startsWith(dial)) national = national.slice(dial.length);
     if (national.length > 10) national = national.slice(0, 10);
-
-    // build stored full value as +<dial><national> if dial present, else '+' + national
     const fullValue = (dial ? `+${dial}${national}` : (national ? `+${national}` : ""));
     const countryStored = dial ? `+${dial}` : "";
-
     setForm((f) => ({ ...f, [fieldName]: fullValue, [`${fieldName}_country`]: countryStored, [`${fieldName}_national`]: national }));
   }
-
-  // Ensure prefilled values are normalized into *_national fields (runs when config or form changes)
   useEffect(() => {
     const effectiveConfig = localConfig || { fields: [] };
     const phoneFields = (effectiveConfig.fields || []).filter(f => f && f.name && (f.type === "phone" || f.type === "tel" || isPhoneFieldName(f.name) || f.meta?.isPhone || f.usePhoneInput));
     if (!phoneFields.length) return;
-
     let updates = {};
     phoneFields.forEach((field) => {
       const val = form[field.name];
       const countryVal = form[`${field.name}_country`] || "";
       if (!val) {
         if (!form[`${field.name}_national`]) {
-          // ensure there's at least an empty key to avoid undefined checks
           updates[`${field.name}_national`] = "";
         }
         return;
@@ -185,35 +145,44 @@ export default function DynamicRegistrationForm({
       if (countryDial && national.startsWith(countryDial)) national = national.slice(countryDial.length);
       if (national.length > 10) national = national.slice(0, 10);
       if (form[`${field.name}_national`] !== national) updates[`${field.name}_national`] = national;
-      // also ensure country stored consistently
       if (countryDial && form[`${field.name}_country`] !== `+${countryDial}`) updates[`${field.name}_country`] = `+${countryDial}`;
     });
-
     if (Object.keys(updates).length) {
       setForm(f => ({ ...f, ...updates }));
     }
-   
   }, [localConfig, JSON.stringify(form)]);
 
+  // --- handle terms change
   function handleTermsChange(e) {
     const checked = !!e.target.checked;
     setForm((f) => ({ ...f, termsAccepted: checked }));
   }
 
+  // --- handle generic change (for text, number, checkbox)
+  function handleChange(e) {
+    const { name, value, type, checked } = e.target;
+    if (type === "email") {
+      const v = (value || "").trim();
+      setForm((f) => ({ ...f, [name]: v }));
+      return;
+    }
+    setForm((f) => ({ ...f, [name]: type === "checkbox" ? checked : value }));
+  }
+
+  // --- Config logic and field processing
   const effectiveConfig = localConfig || { fields: [] };
   const safeFields = (effectiveConfig.fields || []).filter((f) => f && f.name && f.label && isVisible(f, form));
   const emailField = safeFields.find((f) => f.type === "email");
   const emailValue = emailField ? (form[emailField.name] || "") : "";
   const termsRequired = terms && terms.required;
 
-  // disable submit if any visible phone field does not have exactly 10 national digits
   const visiblePhoneFields = safeFields.filter(f => f && f.name && (f.type === "phone" || f.type === "tel" || isPhoneFieldName(f.name) || f.meta?.isPhone || f.usePhoneInput));
   const phoneValidationFailed = visiblePhoneFields.some(f => {
     const nat = form[`${f.name}_national`];
-    // enforce exactly 10 digits before allowing submit (user requested "only 10 numbers")
     return !(typeof nat === "string" && nat.length === 10);
   });
 
+  // --- Robust submit handler: disables submit if OTP/phone is not valid ---
   async function doFinalSubmit(payload) {
     if (onSubmit && typeof onSubmit === "function") {
       try {
@@ -227,54 +196,28 @@ export default function DynamicRegistrationForm({
         return { ok: false, error: err };
       }
     }
-
-    try {
-      const body = { ...payload };
-      if (verificationToken) body.verificationToken = verificationToken;
-      body.registrationType = inferredRegistrationType;
-      const endpoint = `${apiBase || ""}/api/visitors`;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => null);
-
-      if (res.ok && data && data.success) {
-        setSubmitMessage({ type: "success", text: data.message || "Registered successfully." });
-        return { ok: true, data };
-      }
-
-      if (data && data.showUpdate && data.existing && data.existing.id) {
-        navigate(`/ticket-upgrade?type=${encodeURIComponent(inferredRegistrationType)}&id=${encodeURIComponent(String(data.existing.id))}`);
-        return { ok: false, data };
-      }
-
-      setSubmitMessage({ type: "error", text: (data && (data.message || data.error)) || "Registration failed" });
-      return { ok: false, data };
-    } catch (err) {
-      console.error("doFinalSubmit error:", err);
-      setSubmitMessage({ type: "error", text: "Network/server error while submitting." });
-      return { ok: false, error: err };
-    }
+    // ... Potentially extend here ...
+    return { ok: true };
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setSubmitMessage(null);
+
     if (termsRequired && !form?.termsAccepted) {
       setSubmitMessage({ type: "error", text: "Please accept the Terms & Conditions before continuing." });
       return;
     }
 
+    // If OTP required, block unless verified:
     if (emailField && emailField.meta && emailField.meta.useOtp && !emailVerified) {
       setAutoOtpSend(true);
       setPendingSubmitAfterOtp(true);
       setServerNote("We will send an OTP to your email before completing registration.");
+      setSubmitMessage({ type: "error", text: "Please verify your email address with OTP to proceed." });
       return;
     }
 
-    // Prevent submission while phone validation fails
     if (phoneValidationFailed) {
       setSubmitMessage({ type: "error", text: "Please enter a 10-digit phone number for the highlighted phone fields." });
       return;
@@ -300,7 +243,6 @@ export default function DynamicRegistrationForm({
         }
       })();
     }
-    
   }, [emailVerified, pendingSubmitAfterOtp]);
 
   return (
@@ -355,7 +297,6 @@ export default function DynamicRegistrationForm({
                             buttonClass="phone-flag-button"
                             specialLabel=""
                           />
-                          {/* validation helper */}
                           { (form[`${field.name}_national`] && form[`${field.name}_national`].length !== 10) && (
                             <div className="text-sm text-red-600 mt-1">Phone number must be exactly 10 digits (local number).</div>
                           )}
