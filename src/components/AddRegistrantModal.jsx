@@ -245,6 +245,7 @@ export default function AddRegistrantModal({
         ticket_category: ticketCategory || null,
         added_by_admin: true,
         admin_created_at: new Date().toISOString(),
+        skipOtp: true,
       };
 
       const res = await fetch(apiUrl(`/api/${collection}`), {
