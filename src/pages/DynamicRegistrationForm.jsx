@@ -37,6 +37,7 @@ export default function DynamicRegistrationForm({
   terms = null,
   apiBase = "",
   registrationType: propRegistrationType = null,
+  skipOtp = false,
 }) {
   const [emailVerified, setEmailVerified] = useState(false);
   const [verifiedEmailValue, setVerifiedEmailValue] = useState(null); // keep track of which email was last OTP-verified
@@ -162,7 +163,7 @@ export default function DynamicRegistrationForm({
     editable &&
     safeFields.length > 0 &&
     !alreadyRegistered &&
-    (!emailOtpRequired || isOtpVerifiedForCurrentEmail) &&
+    (!emailOtpRequired || skipOtp || isOtpVerifiedForCurrentEmail) &&
     (!termsRequired || form?.termsAccepted) &&
     !phoneValidationFailed &&
     !submitting;
@@ -177,7 +178,7 @@ export default function DynamicRegistrationForm({
       return;
     }
 
-    if (emailOtpRequired && !isOtpVerifiedForCurrentEmail) {
+    if (emailOtpRequired && !isOtpVerifiedForCurrentEmail && !skipOtp) {
       setSubmitMessage({
         type: "error",
         text: "Please verify your email via OTP before submitting."
