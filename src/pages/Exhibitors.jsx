@@ -520,6 +520,9 @@ export default function Exhibitors() {
       companyValue = findFieldValue(form._rawForm, companyCandidates);
     companyValue = companyValue || "";
 
+    const verificationToken =
+      form?.verificationToken || form?.verification_token || null;
+
     const payload = {
       name: form.name || form.fullName || "",
       email: form.email || "",
@@ -531,6 +534,7 @@ export default function Exhibitors() {
       purpose: form.purpose || "",
       slots: Array.isArray(form.slots) ? form.slots : [],
       termsAccepted: !!form.termsAccepted,
+      ...(verificationToken ? { verificationToken } : {}),
       _rawForm: form,
     };
 
