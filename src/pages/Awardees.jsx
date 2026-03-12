@@ -456,6 +456,8 @@ export default function Awardees() {
     try {
       setForm(payload || {});
       // build server payload; minimal fields only
+      const verificationToken =
+        payload?.verificationToken || payload?.verification_token || null;
       const serverPayload = {
         name: payload.name || payload.fullName || "Awardee",
         email: payload.email || "",
@@ -468,6 +470,7 @@ export default function Awardees() {
         bio: payload.bio || null,
         ticket_category: "awardee",
         txId: null,
+        ...(verificationToken ? { verificationToken } : {}),
         _rawForm: payload,
       };
 

@@ -246,6 +246,8 @@ export default function Visitors() {
 
   const saveVisitor = useCallback(
     async (nextForm) => {
+      const verificationToken =
+        nextForm?.verificationToken || nextForm?.verification_token || null;
       const payload = {
         name:
           nextForm.name ||
@@ -267,6 +269,7 @@ export default function Visitors() {
         slots: Array.isArray(nextForm.slots) ? nextForm.slots : [],
         ...(ticketMeta.total > 0 && txId ? { txId } : {}),
         termsAccepted: !!nextForm.termsAccepted,
+        ...(verificationToken ? { verificationToken } : {}),
       };
 
       try {
@@ -276,7 +279,12 @@ export default function Visitors() {
             "Content-Type": "application/json",
             "ngrok-skip-browser-warning": "69420",
           },
-          body: JSON.stringify({ form: payload }),
+          // Some backends expect the OTP verification token at the top-level
+          // while others look for it inside `form`. Send both for compatibility.
+          body: JSON.stringify({
+            form: payload,
+            ...(verificationToken ? { verificationToken } : {}),
+          }),
         });
 
         const json = await res.json().catch(() => null);
