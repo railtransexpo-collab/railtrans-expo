@@ -617,9 +617,9 @@ export default function Awardees() {
             muted
             loop
             playsInline
-            webkit-playsinline="true"
             preload="metadata"
             className="fixed inset-0 w-full h-full object-cover"
+            style={{ zIndex: -1000 }}
             onError={(e) => console.error("Video error", e)}
           >
             <source src={config.backgroundMedia.url} type="video/mp4" />
@@ -634,7 +634,7 @@ export default function Awardees() {
             style={{
               position: "fixed",
               inset: 0,
-              zIndex: -999,
+              zIndex: -1000,
               backgroundImage: `url(${config.backgroundMedia.url})`,
               backgroundSize: "cover",
               backgroundPosition: "center",

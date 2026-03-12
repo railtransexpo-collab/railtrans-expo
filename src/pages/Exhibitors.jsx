@@ -628,6 +628,7 @@ export default function Exhibitors() {
           playsInline
           preload="metadata"
           className="fixed inset-0 w-full h-full object-cover"
+          style={{ zIndex: -1000 }}
         >
         
           <source src={config.backgroundMedia.url} type="video/mp4" />
@@ -636,8 +637,9 @@ export default function Exhibitors() {
       ) : config?.backgroundMedia?.type === "image" &&
         config?.backgroundMedia?.url ? (
         <div
-          className="fixed inset-0 -z-10"
+          className="fixed inset-0"
           style={{
+            zIndex: -1000,
             backgroundImage: `url(${config.backgroundMedia.url})`,
             backgroundSize: "cover",
             backgroundPosition: "center",
