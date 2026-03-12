@@ -564,6 +564,8 @@ export default function Visitors() {
           loop
           playsInline
           preload="metadata"
+          className="fixed inset-0 w-full h-full object-cover"
+          style={{ zIndex: -1000 }}
           onCanPlay={() => {
             setBgVideoReady(true);
             setBgVideoErrorMsg("");
@@ -573,15 +575,16 @@ export default function Visitors() {
             setBgVideoErrorMsg("Background video failed to load");
           }}
         >
-          <source src={videoUrl} />
+          <source src={videoUrl} type="video/mp4" />
         </video>
 
 
       )}
       {!isMobile && (!videoUrl || !bgVideoReady) && bgImageUrl && (
         <div
-          className="fixed inset-0 -z-10"
+          className="fixed inset-0"
           style={{
+            zIndex: -1000,
             backgroundImage: `url(${bgImageUrl})`,
             backgroundSize: "cover",
             backgroundPosition: "center",
