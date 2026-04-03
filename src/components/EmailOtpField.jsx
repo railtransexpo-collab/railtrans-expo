@@ -18,7 +18,7 @@ function makeRequestId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 function normalizeToRole(t) {
-  if (!t) return "visitor";
+  if (!t) return null;
   const s = String(t).trim().toLowerCase();
   const singular = s.endsWith("s") ? s.slice(0, -1) : s;
   const map = { visitor: "visitor", exhibitor: "exhibitor", speaker: "speaker", partner: "partner", awardee: "awardee" };
@@ -72,7 +72,10 @@ export default function EmailOtpVerifier({
       /* ignore */
     }
   }
-  const role = normalizeToRole(initialRole || "visitor");
+  const role = normalizeToRole(initialRole);
+  if (!role) {
+    throw new Error("registrationType is required for OTP flow");
+  }
 
   useEffect(() => {
     if (inferredFromUrl) {
@@ -145,14 +148,16 @@ export default function EmailOtpVerifier({
     setMsg(""); setError(""); setExisting(null);
     const requestId = makeRequestId();
 
+
     try {
       const url = buildUrl("/api/otp/send");
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
-        body: JSON.stringify({ type: "email", value: emailNorm, requestId, registrationType: role }),
+        body: JSON.stringify({ type: role, value: emailNorm, requestId, registrationType: role }),
       });
       let data = null;
+      console.log("OTP SEND ROLE:", role);
       try { data = await res.json(); } catch { data = null; }
 
       if (res.status === 409 && data && data.existing) {
@@ -190,9 +195,15 @@ export default function EmailOtpVerifier({
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
-        body: JSON.stringify({ value: emailNorm, otp: String(otp).trim(), registrationType: role }),
+        body: JSON.stringify({
+          type: role,
+          value: emailNorm,
+          otp: String(otp).trim(),
+          registrationType: role
+        })
       });
       let data = null;
+      console.log("OTP VERIFY ROLE:", role);
       try { data = await res.json(); } catch { data = null; }
 
       if (!data || !data.success) {
