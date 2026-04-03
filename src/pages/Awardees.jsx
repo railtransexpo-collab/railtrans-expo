@@ -735,7 +735,7 @@ export default function Awardees() {
                 onSubmit={handleFormSubmit}
                 editable={true}
                 submitting={submitting}
-                registrationType="partner"
+                registrationType="awardee"
                 terms={
                   config && (config.termsUrl || config.termsText)
                     ? {
