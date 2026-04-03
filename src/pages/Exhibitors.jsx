@@ -693,6 +693,7 @@ export default function Exhibitors() {
                 onSubmit={handleFormSubmit}
                 editable
                 apiBase={apiBase}
+                registrationType="exhibitor" 
                 terms={{
                   url: config?.termsUrl,
                   label: config?.termsLabel || "Terms & Conditions",
