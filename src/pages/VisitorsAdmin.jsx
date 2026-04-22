@@ -3,7 +3,7 @@ import DynamicRegistrationForm from "./DynamicRegistrationForm";
 
 function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-// Use REACT_APP_API_BASE, or REACT_APP_API_BASE_URL, or window.__API_BASE__, or default to ""
+
 const API_BASE = (
   process.env.REACT_APP_API_BASE ||
   process.env.REACT_APP_API_BASE_URL ||
