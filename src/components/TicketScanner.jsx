@@ -385,8 +385,11 @@ export default function TicketScanner({
 
     scanningRef.current = true;
     setRawPayload(String(data));
-    setMessage("QR detected — processing...");
-    setValidation(null);
+
+    if (!successPausedRef.current) {
+      setMessage("QR detected — processing...");
+      setValidation(null);
+    }
 
     const extracted = extractTicketId(String(data));
     if (!extracted) {
@@ -421,9 +424,11 @@ export default function TicketScanner({
         if (onError)
           onError(new Error(js?.error || `Validate failed (${res.status})`));
       } else {
+        successPausedRef.current = true;
+        scanningRef.current = true;
+
         setValidation({ ok: true, ticket: js.ticket || js });
         setMessage("✅ Ticket matched");
-        successPausedRef.current = true;
 
         if (onSuccess) onSuccess(js.ticket || js);
 
@@ -511,15 +516,15 @@ export default function TicketScanner({
     }
   }
 
- function handleScanAgain() {
-  successPausedRef.current = false;
-  scanningRef.current = false;
+  function handleScanAgain() {
+    successPausedRef.current = false;
+    scanningRef.current = false;
 
-  setValidation(null);
-  setTicketId(null);
-  setRawPayload("");
-  setMessage("Scanning for QR…");
-}
+    setValidation(null);
+    setTicketId(null);
+    setRawPayload("");
+    setMessage("Scanning for QR…");
+  }
 
   function renderValidation() {
     if (!validation) return null;
