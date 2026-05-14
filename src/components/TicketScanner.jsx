@@ -489,11 +489,12 @@ export default function TicketScanner({
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         printWin.location.href = url;
-        setTimeout(() => {
+        printWin.onload = () => {
           try {
-            if (printWin && !printWin.closed) printWin.print();
+            printWin.focus();
+            printWin.print();
           } catch (_) {}
-        }, 800);
+        };
         setMessage("PDF opened — print dialog should appear");
       } else {
         printWin.close();
@@ -509,8 +510,14 @@ export default function TicketScanner({
   }
 
   function handleManualPrint() {
+    successPausedRef.current = true;
+    scanningRef.current = true;
+
     if (stickerData.name || stickerData.organization) {
-      printSticker({ ...stickerData, page: stickerPageSize });
+      printSticker({
+        ...stickerData,
+        page: stickerPageSize,
+      });
     } else {
       setMessage("No ticket data available to print");
     }
@@ -599,7 +606,11 @@ export default function TicketScanner({
         <div className="mt-3 flex gap-2">
           <button
             className="px-4 py-2 bg-[#196e87] text-white rounded"
-            onClick={() => doPrint(ticketId)}
+            onClick={() => {
+              successPausedRef.current = true;
+              scanningRef.current = true;
+              doPrint(ticketId);
+            }}
           >
             🖨️ Print Badge
           </button>
