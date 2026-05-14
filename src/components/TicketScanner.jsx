@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import jsQR from "jsqr";
 
 const API_BASE =
@@ -243,11 +243,10 @@ function printSticker({ name, organization, page = { w: "80mm", h: "50mm" } }) {
   printWin.document.write(html);
   printWin.document.close();
 
-  // Don't auto-print, let user see preview first
   return true;
 }
 
-export default function TicketScanner({
+const TicketScanner = React.memo(function TicketScanner({
   apiPath = null,
   autoPrintOnValidate = false,
   mode = "badge",
@@ -262,7 +261,13 @@ export default function TicketScanner({
   const streamRef = useRef(null);
   const isLockedRef = useRef(false);
   const isMountedRef = useRef(true);
-  const previewWindowRef = useRef(null);
+  
+  // Store ticket data in refs to prevent re-render issues
+  const ticketDataRef = useRef({
+    ticketId: null,
+    validation: null,
+    pdfUrl: null,
+  });
 
   const [message, setMessage] = useState("Initializing camera...");
   const [rawPayload, setRawPayload] = useState("");
@@ -274,8 +279,8 @@ export default function TicketScanner({
   const [isLoadingPDF, setIsLoadingPDF] = useState(false);
   const [printError, setPrintError] = useState(null);
 
-  const validateUrl = apiUrl("/api/tickets/validate");
-  const printUrl = apiUrl("/api/tickets/scan");
+  const validateUrl = useMemo(() => apiUrl("/api/tickets/validate"), []);
+  const printUrl = useMemo(() => apiUrl("/api/tickets/scan"), []);
 
   const isStickerMode = String(mode).toLowerCase() === "sticker";
 
@@ -287,17 +292,15 @@ export default function TicketScanner({
     return extractNameAndOrganization(validation.ticket);
   }, [validation]);
 
-  // Close preview when component unmounts
+  // Update ticketDataRef whenever ticketId or validation changes
   useEffect(() => {
-    return () => {
-      if (previewWindowRef.current && !previewWindowRef.current.closed) {
-        previewWindowRef.current.close();
-      }
-    };
-  }, []);
+    ticketDataRef.current.ticketId = ticketId;
+    ticketDataRef.current.validation = validation;
+    ticketDataRef.current.pdfUrl = pdfUrl;
+  }, [ticketId, validation, pdfUrl]);
 
   // Cleanup function
-  const cleanup = () => {
+  const cleanup = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -309,10 +312,155 @@ export default function TicketScanner({
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-  };
+  }, []);
+
+  // Handle print badge - defined early to avoid issues
+  const handlePrintBadge = useCallback(async (id) => {
+    console.log("handlePrintBadge called with id:", id);
+    if (!id) {
+      console.log("No ticket ID provided");
+      return;
+    }
+
+    setIsLoadingPDF(true);
+    setPrintError(null);
+    setMessage("Loading badge preview...");
+
+    try {
+      console.log("Fetching PDF from:", printUrl);
+      const res = await fetch(printUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: String(id) }),
+        credentials: "include",
+      });
+
+      console.log("Response status:", res.status);
+
+      if (!res.ok) {
+        const js = await res.json().catch(() => null);
+        const errorMsg = js?.error || `Failed to load badge (${res.status})`;
+        setPrintError(errorMsg);
+        setMessage(`Error: ${errorMsg}`);
+        setIsLoadingPDF(false);
+        return;
+      }
+
+      const ct = res.headers.get("content-type") || "";
+      console.log("Content-Type:", ct);
+      
+      if (ct.includes("application/pdf")) {
+        const blob = await res.blob();
+        console.log("PDF blob size:", blob.size);
+        const url = URL.createObjectURL(blob);
+        setPdfUrl(url);
+        ticketDataRef.current.pdfUrl = url;
+        setShowPrintPreview(true);
+        setMessage("✅ Badge preview loaded - Click print when ready");
+      } else {
+        setPrintError("Server did not return a PDF");
+        setMessage("Error: Invalid response from server");
+      }
+    } catch (e) {
+      console.error("Print error:", e);
+      setPrintError(e.message || "Unknown error");
+      setMessage(`Error: ${e.message || "Failed to load badge"}`);
+    } finally {
+      setIsLoadingPDF(false);
+    }
+  }, [printUrl]);
+
+  // Handle printing
+  const handlePrint = useCallback(() => {
+    const currentPdfUrl = pdfUrl || ticketDataRef.current.pdfUrl;
+    console.log("handlePrint called, pdfUrl:", currentPdfUrl);
+    
+    if (!currentPdfUrl) {
+      console.log("No PDF URL available");
+      return;
+    }
+    
+    const printWindow = window.open(currentPdfUrl, "_blank");
+    if (printWindow) {
+      printWindow.onload = () => {
+        setTimeout(() => {
+          printWindow.print();
+        }, 500);
+      };
+      setMessage("✅ Print dialog opened");
+    } else {
+      setMessage("⚠️ Popup blocked - Please allow popups and try again");
+      // Alternative: try direct print
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = currentPdfUrl;
+      document.body.appendChild(iframe);
+      iframe.onload = () => {
+        setTimeout(() => {
+          iframe.contentWindow.print();
+        }, 500);
+      };
+    }
+  }, [pdfUrl]);
+
+  // Download PDF
+  const handleDownload = useCallback(() => {
+    const currentPdfUrl = pdfUrl || ticketDataRef.current.pdfUrl;
+    if (!currentPdfUrl) return;
+    
+    const a = document.createElement('a');
+    a.href = currentPdfUrl;
+    a.download = `badge-${ticketId || ticketDataRef.current.ticketId}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setMessage("✅ Badge downloaded");
+  }, [pdfUrl, ticketId]);
+
+  // Close print preview
+  const handleClosePreview = useCallback(() => {
+    setShowPrintPreview(false);
+    if (pdfUrl) {
+      URL.revokeObjectURL(pdfUrl);
+      setPdfUrl(null);
+      ticketDataRef.current.pdfUrl = null;
+    }
+    setPrintError(null);
+    setMessage("✅ Ticket matched - Ready to print");
+  }, [pdfUrl]);
+
+  // Handle scan again
+  const handleScanAgain = useCallback(() => {
+    console.log("Resetting scanner...");
+    
+    if (showPrintPreview) {
+      handleClosePreview();
+    }
+    
+    isLockedRef.current = false;
+    
+    setValidation(null);
+    setTicketId(null);
+    setRawPayload("");
+    setShowPrintPreview(false);
+    setPrintError(null);
+    
+    if (pdfUrl) {
+      URL.revokeObjectURL(pdfUrl);
+      setPdfUrl(null);
+    }
+    
+    ticketDataRef.current = {
+      ticketId: null,
+      validation: null,
+      pdfUrl: null,
+    };
+    
+    startCamera();
+  }, [showPrintPreview, handleClosePreview, pdfUrl]);
 
   // Start camera function
-  const startCamera = async () => {
+  const startCamera = useCallback(async () => {
     try {
       cleanup();
 
@@ -392,28 +540,10 @@ export default function TicketScanner({
       setShowVideo(false);
       if (onError) onError(err);
     }
-  };
+  }, [cleanup, onError]);
 
-  // Start camera on component mount
-  useEffect(() => {
-    console.log("Component mounted, starting camera...");
-    isMountedRef.current = true;
-    isLockedRef.current = false;
-    
-    startCamera();
-
-    return () => {
-      console.log("Component unmounting, cleaning up...");
-      isMountedRef.current = false;
-      cleanup();
-      // Close preview window if open
-      if (previewWindowRef.current && !previewWindowRef.current.closed) {
-        previewWindowRef.current.close();
-      }
-    };
-  }, []);
-
-  async function handleRawScan(data) {
+  // Handle raw scan
+  const handleRawScan = useCallback(async (data) => {
     if (isLockedRef.current) {
       console.log("Scan locked, ignoring QR detection");
       return;
@@ -421,13 +551,9 @@ export default function TicketScanner({
 
     console.log("Processing QR data...");
     
-    // Lock immediately to prevent any further scanning
     isLockedRef.current = true;
-    
-    // Stop camera and animation frame
     cleanup();
     setShowVideo(false);
-
     setRawPayload(String(data));
     setMessage("QR detected — processing...");
     setValidation(null);
@@ -447,6 +573,7 @@ export default function TicketScanner({
     }
 
     setTicketId(extracted);
+    ticketDataRef.current.ticketId = extracted;
     setMessage(`Validating ticket: ${extracted}...`);
 
     try {
@@ -474,22 +601,19 @@ export default function TicketScanner({
           }
         }, 2000);
       } else {
-        // SUCCESS - Keep everything locked
         console.log("✅ Validation successful, keeping UI visible");
         setValidation({ ok: true, ticket: js.ticket || js });
+        ticketDataRef.current.validation = { ok: true, ticket: js.ticket || js };
         setMessage("✅ Ticket matched - Ready to print");
 
         if (onSuccess) onSuccess(js.ticket || js);
 
-        // Auto-print if enabled
         if (autoPrintOnValidate && isStickerMode) {
           const nameOrg = extractNameAndOrganization(js.ticket || js);
           printSticker({ ...nameOrg, page: stickerPageSize });
         } else if (autoPrintOnValidate && !isStickerMode) {
           await handlePrintBadge(extracted);
         }
-        
-        // NEVER unlock - stay locked until user clicks "Scan again"
       }
     } catch (e) {
       console.error("[TicketScanner] validate error", e);
@@ -503,94 +627,22 @@ export default function TicketScanner({
         }
       }, 2000);
     }
-  }
+  }, [cleanup, validateUrl, onError, onSuccess, autoPrintOnValidate, isStickerMode, handlePrintBadge, stickerPageSize]);
 
-  // Load PDF and show preview
-  async function handlePrintBadge(id) {
-    if (!id) return;
-
-    setIsLoadingPDF(true);
-    setPrintError(null);
-    setMessage("Loading badge preview...");
-
-    try {
-      const res = await fetch(printUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticketId: String(id) }),
-        credentials: "include",
-      });
-
-      if (!res.ok) {
-        const js = await res.json().catch(() => null);
-        const errorMsg = js?.error || `Failed to load badge (${res.status})`;
-        setPrintError(errorMsg);
-        setMessage(`Error: ${errorMsg}`);
-        setIsLoadingPDF(false);
-        return;
-      }
-
-      const ct = res.headers.get("content-type") || "";
-      if (ct.includes("application/pdf")) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        setPdfUrl(url);
-        setShowPrintPreview(true);
-        setMessage("✅ Badge preview loaded - Click print when ready");
-      } else {
-        setPrintError("Server did not return a PDF");
-        setMessage("Error: Invalid response from server");
-      }
-    } catch (e) {
-      console.error("Print error", e);
-      setPrintError(e.message || "Unknown error");
-      setMessage(`Error: ${e.message || "Failed to load badge"}`);
-    } finally {
-      setIsLoadingPDF(false);
-    }
-  }
-
-  // Handle actual printing
-  function handlePrint() {
-    if (!pdfUrl) return;
+  // Start camera on component mount
+  useEffect(() => {
+    console.log("Component mounted, starting camera...");
+    isMountedRef.current = true;
+    isLockedRef.current = false;
     
-    // Open PDF in new window and trigger print
-    const printWindow = window.open(pdfUrl, "_blank");
-    if (printWindow) {
-      previewWindowRef.current = printWindow;
-      printWindow.onload = () => {
-        setTimeout(() => {
-          printWindow.print();
-        }, 500);
-      };
-      setMessage("✅ Print dialog opened");
-    } else {
-      setMessage("⚠️ Popup blocked - Please allow popups and try again");
-    }
-  }
+    startCamera();
 
-  // Download PDF instead of printing
-  function handleDownload() {
-    if (!pdfUrl) return;
-    const a = document.createElement('a');
-    a.href = pdfUrl;
-    a.download = `badge-${ticketId}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setMessage("✅ Badge downloaded");
-  }
-
-  // Close print preview
-  function handleClosePreview() {
-    setShowPrintPreview(false);
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl);
-      setPdfUrl(null);
-    }
-    setPrintError(null);
-    setMessage("✅ Ticket matched - Ready to print");
-  }
+    return () => {
+      console.log("Component unmounting, cleaning up...");
+      isMountedRef.current = false;
+      cleanup();
+    };
+  }, [startCamera, cleanup]);
 
   function handleManualPrint() {
     if (stickerData.name || stickerData.organization) {
@@ -601,33 +653,6 @@ export default function TicketScanner({
     } else {
       setMessage("No ticket data available to print");
     }
-  }
-
-  function handleScanAgain() {
-    console.log("Resetting scanner...");
-    
-    // Close preview if open
-    if (showPrintPreview) {
-      handleClosePreview();
-    }
-    
-    // Unlock scanning
-    isLockedRef.current = false;
-
-    // Clear all states
-    setValidation(null);
-    setTicketId(null);
-    setRawPayload("");
-    setShowPrintPreview(false);
-    setPrintError(null);
-    
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl);
-      setPdfUrl(null);
-    }
-
-    // Restart the camera
-    startCamera();
   }
 
   function renderValidation() {
@@ -652,7 +677,6 @@ export default function TicketScanner({
       );
     }
 
-    // STICKER MODE - Show name and organization for printing
     if (isStickerMode) {
       return (
         <div className="p-3 rounded border bg-white text-gray-900">
@@ -686,7 +710,6 @@ export default function TicketScanner({
       );
     }
 
-    // BADGE MODE
     const t = validation.ticket || {};
     return (
       <div className="p-3 bg-green-50 text-green-800 rounded">
@@ -703,7 +726,10 @@ export default function TicketScanner({
         <div className="mt-3 flex gap-2">
           <button
             className="px-4 py-2 bg-[#196e87] text-white rounded hover:bg-[#0f5568]"
-            onClick={() => handlePrintBadge(ticketId)}
+            onClick={() => {
+              console.log("Print Badge button clicked, ticketId:", ticketId);
+              handlePrintBadge(ticketId || ticketDataRef.current.ticketId);
+            }}
             disabled={isLoadingPDF}
           >
             {isLoadingPDF ? "⏳ Loading..." : "🖨️ Print Badge"}
@@ -719,16 +745,17 @@ export default function TicketScanner({
     );
   }
 
-  // Print Preview Modal
   function renderPrintPreview() {
     if (!showPrintPreview) return null;
+
+    const currentPdfUrl = pdfUrl || ticketDataRef.current.pdfUrl;
+    const currentTicketId = ticketId || ticketDataRef.current.ticketId;
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
-          {/* Header */}
           <div className="flex items-center justify-between p-4 border-b">
-            <h3 className="text-lg font-semibold">Badge Preview - {ticketId}</h3>
+            <h3 className="text-lg font-semibold">Badge Preview - {currentTicketId}</h3>
             <button
               onClick={handleClosePreview}
               className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
@@ -737,11 +764,10 @@ export default function TicketScanner({
             </button>
           </div>
           
-          {/* PDF Preview */}
           <div className="flex-1 p-4 overflow-auto" style={{ minHeight: "60vh" }}>
-            {pdfUrl ? (
+            {currentPdfUrl ? (
               <iframe
-                src={pdfUrl}
+                src={currentPdfUrl}
                 className="w-full h-full border-0"
                 style={{ minHeight: "60vh" }}
                 title="Badge Preview"
@@ -764,7 +790,6 @@ export default function TicketScanner({
             )}
           </div>
           
-          {/* Actions */}
           <div className="flex items-center justify-between p-4 border-t bg-gray-50">
             <div className="text-sm text-gray-600">
               {validation?.ticket?.name && (
@@ -781,14 +806,14 @@ export default function TicketScanner({
               <button
                 onClick={handleDownload}
                 className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
-                disabled={!pdfUrl}
+                disabled={!currentPdfUrl}
               >
                 💾 Download
               </button>
               <button
                 onClick={handlePrint}
                 className="px-4 py-2 bg-[#196e87] text-white rounded hover:bg-[#0f5568]"
-                disabled={!pdfUrl}
+                disabled={!currentPdfUrl}
               >
                 🖨️ Print
               </button>
@@ -803,7 +828,6 @@ export default function TicketScanner({
     <div>
       <div className="bg-white rounded-lg shadow p-3">
         <div className="mb-3">
-          {/* Video element - shown/hidden based on showVideo state */}
           {showVideo ? (
             <video
               ref={videoRef}
@@ -886,12 +910,12 @@ export default function TicketScanner({
           </>
         )}
 
-        {/* VALIDATION RESULT - Stays visible until user clicks Scan Again */}
         {validation && renderValidation()}
       </div>
       
-      {/* PRINT PREVIEW MODAL - Shows when user clicks Print Badge */}
       {renderPrintPreview()}
     </div>
   );
-}
+});
+
+export default TicketScanner;
