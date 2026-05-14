@@ -270,11 +270,13 @@ export default function TicketScanner({
   const streamRef = useRef(null);
   const scanningRef = useRef(false);
   const successPausedRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const [message, setMessage] = useState("Scanning for QR…");
   const [rawPayload, setRawPayload] = useState("");
   const [ticketId, setTicketId] = useState(null);
   const [validation, setValidation] = useState(null);
+  const [isScanning, setIsScanning] = useState(true);
 
   const validateUrl = apiUrl("/api/tickets/validate");
   const printUrl = apiUrl("/api/tickets/scan");
@@ -289,104 +291,122 @@ export default function TicketScanner({
     return extractNameAndOrganization(validation.ticket);
   }, [validation]);
 
-  useEffect(() => {
-    let mounted = true;
+  // Function to stop camera and clean up
+  const stopCamera = () => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
 
-    async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "environment",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        });
+  // Function to start camera scanning
+  const startCamera = async () => {
+    try {
+      // Clean up any existing stream first
+      stopCamera();
 
-        if (!mounted) {
-          stream.getTracks().forEach((t) => t.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      if (!mountedRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const ctx = canvas.getContext("2d");
+
+      const tick = () => {
+        if (!mountedRef.current || !videoRef.current || !canvasRef.current) {
           return;
         }
 
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+        // Check if we should still be scanning
+        if (successPausedRef.current || !isScanning) {
+          return;
         }
 
-        const canvas = canvasRef.current;
-        if (!canvas) return;
+        try {
+          if (
+            videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA
+          ) {
+            canvas.width = videoRef.current.videoWidth;
+            canvas.height = videoRef.current.videoHeight;
+            ctx.drawImage(
+              videoRef.current,
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const imageData = ctx.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const code = jsQR(
+              imageData.data,
+              imageData.width,
+              imageData.height,
+              { inversionAttempts: "attemptBoth" },
+            );
 
-        const ctx = canvas.getContext("2d");
-
-        const tick = () => {
-          if (!mounted || !videoRef.current || !canvasRef.current) return;
-
-          try {
-            if (
-              videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA
-            ) {
-              canvas.width = videoRef.current.videoWidth;
-              canvas.height = videoRef.current.videoHeight;
-              ctx.drawImage(
-                videoRef.current,
-                0,
-                0,
-                canvas.width,
-                canvas.height,
-              );
-              const imageData = ctx.getImageData(
-                0,
-                0,
-                canvas.width,
-                canvas.height,
-              );
-              const code = jsQR(
-                imageData.data,
-                imageData.width,
-                imageData.height,
-                { inversionAttempts: "attemptBoth" },
-              );
-
-              if (code) {
-                // HARD STOP after successful validation
-                if (successPausedRef.current || validation?.ok) {
-                  return;
-                }
-
-                // Prevent duplicate scans
-                if (!scanningRef.current) {
-                  handleRawScan(code.data);
-                }
-              }
+            if (code && !successPausedRef.current && !scanningRef.current) {
+              handleRawScan(code.data);
             }
-          } catch (e) {
-            console.warn("frame read error", e?.message);
           }
+        } catch (e) {
+          console.warn("frame read error", e?.message);
+        }
 
+        if (mountedRef.current && isScanning) {
           rafRef.current = requestAnimationFrame(tick);
-        };
+        }
+      };
 
-        rafRef.current = requestAnimationFrame(tick);
-      } catch (err) {
-        console.error("Camera start error", err);
-        setMessage(`Camera error: ${err.message || err}`);
-        if (onError) onError(err);
-      }
+      rafRef.current = requestAnimationFrame(tick);
+    } catch (err) {
+      console.error("Camera start error", err);
+      setMessage(`Camera error: ${err.message || err}`);
+      if (onError) onError(err);
     }
+  };
 
+  useEffect(() => {
+    mountedRef.current = true;
+    setIsScanning(true);
     startCamera();
 
     return () => {
-      mounted = false;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (streamRef.current)
-        streamRef.current.getTracks().forEach((t) => t.stop());
+      mountedRef.current = false;
+      stopCamera();
     };
-  }, []);
+  }, []); // Only run on mount
 
   async function handleRawScan(data) {
-    if (scanningRef.current) return;
+    if (scanningRef.current || successPausedRef.current) return;
 
     scanningRef.current = true;
     setRawPayload(String(data));
@@ -428,9 +448,14 @@ export default function TicketScanner({
         setMessage("❌ Ticket not matched");
         if (onError)
           onError(new Error(js?.error || `Validate failed (${res.status})`));
+        scanningRef.current = false;
       } else {
+        // SUCCESS - Stop scanning immediately
         successPausedRef.current = true;
-        scanningRef.current = true;
+        setIsScanning(false);
+        
+        // Stop the camera to save resources
+        stopCamera();
 
         setValidation({ ok: true, ticket: js.ticket || js });
         setMessage("✅ Ticket matched");
@@ -444,18 +469,16 @@ export default function TicketScanner({
         } else if (autoPrintOnValidate && !isStickerMode) {
           await doPrint(extracted);
         }
+        
+        // Keep scanning flag true to prevent re-scanning same ticket
+        scanningRef.current = true;
       }
     } catch (e) {
       console.error("[TicketScanner] validate error", e);
       setValidation({ ok: false, error: e.message || String(e) });
       setMessage("Validation request error");
       if (onError) onError(e);
-    } finally {
-      if (!successPausedRef.current) {
-        setTimeout(() => {
-          scanningRef.current = false;
-        }, 800);
-      }
+      scanningRef.current = false;
     }
   }
 
@@ -527,20 +550,27 @@ export default function TicketScanner({
       setMessage("No ticket data available to print");
     }
   }
+
   function handleScanAgain() {
-    // reset all scanner locks
+    // Reset all scanner locks
     successPausedRef.current = false;
     scanningRef.current = false;
 
-    // clear validation state
+    // Clear validation state
     setValidation(null);
 
-    // clear scanned data
+    // Clear scanned data
     setTicketId(null);
     setRawPayload("");
 
-    // restore scanner UI
+    // Enable scanning again
+    setIsScanning(true);
+
+    // Restore scanner UI
     setMessage("Scanning for QR…");
+
+    // Restart the camera
+    startCamera();
   }
 
   function renderValidation() {
@@ -618,8 +648,6 @@ export default function TicketScanner({
             className="px-4 py-2 bg-[#196e87] text-white rounded"
             onClick={() => {
               successPausedRef.current = true;
-
-              // DO NOT leave scanner active after success
               scanningRef.current = false;
               doPrint(ticketId);
             }}
@@ -641,12 +669,28 @@ export default function TicketScanner({
     <div>
       <div className="bg-white rounded-lg shadow p-3">
         <div className="mb-3">
-          <video
-            ref={videoRef}
-            style={{ width: "100%", maxHeight: 480, borderRadius: 8 }}
-            playsInline
-            muted
-          />
+          {/* Show video only when scanning */}
+          {isScanning && (
+            <video
+              ref={videoRef}
+              style={{ width: "100%", maxHeight: 480, borderRadius: 8 }}
+              playsInline
+              muted
+            />
+          )}
+          {/* Show placeholder when not scanning */}
+          {!isScanning && validation?.ok && (
+            <div 
+              className="bg-gray-100 rounded-lg flex items-center justify-center"
+              style={{ width: "100%", height: 320, borderRadius: 8 }}
+            >
+              <div className="text-center text-gray-500">
+                <div className="text-4xl mb-2">✅</div>
+                <div className="text-lg font-semibold">Ticket Validated</div>
+                <div className="text-sm">Camera paused</div>
+              </div>
+            </div>
+          )}
           <canvas ref={canvasRef} style={{ display: "none" }} />
         </div>
 
