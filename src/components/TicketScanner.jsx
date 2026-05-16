@@ -320,12 +320,15 @@ const TicketScanner = React.memo(function TicketScanner({
     }
   }, []);
 
-  // Handle print badge - defined early to avoid issues
+  // FIX 1: handlePrintBadge — opens preview modal and keeps it open
   const handlePrintBadge = useCallback(
     async (id) => {
-      console.log("handlePrintBadge called with id:", id);
-      if (!id) {
-        console.log("No ticket ID provided");
+      // Always resolve the ID from ref first to avoid stale closure
+      const resolvedId = id || ticketDataRef.current.ticketId;
+      console.log("handlePrintBadge called with resolvedId:", resolvedId);
+
+      if (!resolvedId) {
+        console.log("No ticket ID available");
         return;
       }
 
@@ -333,12 +336,18 @@ const TicketScanner = React.memo(function TicketScanner({
       setPrintError(null);
       setMessage("Loading badge preview...");
 
+      // FIX 2: Show the preview modal immediately (even before PDF loads)
+      // so user sees the loading spinner inside the modal right away
+      setShowPrintPreview(true);
+      setShowVideo(false);
+      isLockedRef.current = true;
+
       try {
         console.log("Fetching PDF from:", printUrl);
         const res = await fetch(printUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ticketId: String(id) }),
+          body: JSON.stringify({ ticketId: String(resolvedId) }),
           credentials: "include",
         });
 
@@ -350,6 +359,7 @@ const TicketScanner = React.memo(function TicketScanner({
           setPrintError(errorMsg);
           setMessage(`Error: ${errorMsg}`);
           setIsLoadingPDF(false);
+          // Keep modal open so user can see error and choose to close manually
           return;
         }
 
@@ -362,10 +372,7 @@ const TicketScanner = React.memo(function TicketScanner({
           const url = URL.createObjectURL(blob);
           setPdfUrl(url);
           ticketDataRef.current.pdfUrl = url;
-          setShowPrintPreview(true);
-          setMessage("✅ Badge preview loaded - Click print when ready");
-          setShowVideo(false);
-          isLockedRef.current = true;
+          setMessage("✅ Badge preview loaded — click Print when ready");
         } else {
           setPrintError("Server did not return a PDF");
           setMessage("Error: Invalid response from server");
@@ -381,7 +388,7 @@ const TicketScanner = React.memo(function TicketScanner({
     [printUrl],
   );
 
-  // Handle printing
+  // Handle printing via iframe
   const handlePrint = useCallback(() => {
     const currentPdfUrl = pdfUrl || ticketDataRef.current.pdfUrl;
     console.log("handlePrint called, pdfUrl:", currentPdfUrl);
@@ -394,11 +401,9 @@ const TicketScanner = React.memo(function TicketScanner({
     const iframe = document.querySelector("#badge-preview-frame");
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.focus();
-
       setTimeout(() => {
         iframe.contentWindow.print();
       }, 300);
-
       setMessage("✅ Print dialog opened");
     }
   }, [pdfUrl]);
@@ -406,49 +411,49 @@ const TicketScanner = React.memo(function TicketScanner({
   // Download PDF
   const handleDownload = useCallback(() => {
     const currentPdfUrl = pdfUrl || ticketDataRef.current.pdfUrl;
+    const currentTicketId = ticketId || ticketDataRef.current.ticketId;
     if (!currentPdfUrl) return;
 
     const a = document.createElement("a");
     a.href = currentPdfUrl;
-    a.download = `badge-${ticketId || ticketDataRef.current.ticketId}.pdf`;
+    a.download = `badge-${currentTicketId}.pdf`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setMessage("✅ Badge downloaded");
   }, [pdfUrl, ticketId]);
 
-  // Close print preview
+  // FIX 3: Close preview — only called explicitly by user action (× button or Cancel)
   const handleClosePreview = useCallback(() => {
     setShowPrintPreview(false);
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl);
-      setPdfUrl(null);
+    const currentUrl = ticketDataRef.current.pdfUrl;
+    if (currentUrl) {
+      URL.revokeObjectURL(currentUrl);
       ticketDataRef.current.pdfUrl = null;
+      setPdfUrl(null);
     }
     setPrintError(null);
-    setMessage("✅ Ticket matched - Ready to print");
-  }, [pdfUrl]);
+    setMessage("✅ Ticket matched — scan another or print again");
+  }, []);
 
-  // Handle scan again
+  // FIX 4: handleScanAgain — no longer calls handleClosePreview to avoid double cleanup
   const handleScanAgain = useCallback(() => {
     console.log("Resetting scanner...");
 
-    if (showPrintPreview) {
-      handleClosePreview();
+    // Inline PDF cleanup — do NOT call handleClosePreview here
+    const currentUrl = ticketDataRef.current.pdfUrl || pdfUrl;
+    if (currentUrl) {
+      URL.revokeObjectURL(currentUrl);
     }
 
-    isLockedRef.current = false;
-
+    // Reset all state
+    setShowPrintPreview(false);
+    setPdfUrl(null);
+    setPrintError(null);
     setValidation(null);
     setTicketId(null);
     setRawPayload("");
-    setShowPrintPreview(false);
-    setPrintError(null);
-
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl);
-      setPdfUrl(null);
-    }
+    setMessage("Starting camera...");
 
     ticketDataRef.current = {
       ticketId: null,
@@ -456,8 +461,11 @@ const TicketScanner = React.memo(function TicketScanner({
       pdfUrl: null,
     };
 
+    isLockedRef.current = false;
+
     startCamera();
-  }, [showPrintPreview, handleClosePreview, pdfUrl]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfUrl]);
 
   // Start camera function
   const startCamera = useCallback(async () => {
@@ -540,6 +548,7 @@ const TicketScanner = React.memo(function TicketScanner({
       setShowVideo(false);
       if (onError) onError(err);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanup, onError]);
 
   // Handle raw scan
@@ -602,20 +611,24 @@ const TicketScanner = React.memo(function TicketScanner({
             }
           }, 2000);
         } else {
-          console.log("✅ Validation successful, keeping UI visible");
-          setValidation({ ok: true, ticket: js.ticket || js });
-          ticketDataRef.current.validation = {
-            ok: true,
-            ticket: js.ticket || js,
-          };
-          setMessage("✅ Ticket matched - Ready to print");
+          console.log("✅ Validation successful");
+          const ticketPayload = js.ticket || js;
 
-          if (onSuccess) onSuccess(js.ticket || js);
+          setValidation({ ok: true, ticket: ticketPayload });
+          ticketDataRef.current.validation = { ok: true, ticket: ticketPayload };
+          setMessage("✅ Ticket matched — loading badge preview...");
 
-          if (autoPrintOnValidate && isStickerMode) {
-            const nameOrg = extractNameAndOrganization(js.ticket || js);
-            printSticker({ ...nameOrg, page: stickerPageSize });
-          } else if (autoPrintOnValidate && !isStickerMode) {
+          if (onSuccess) onSuccess(ticketPayload);
+
+          if (isStickerMode) {
+            // Sticker mode: show sticker UI; auto-print if flag set
+            if (autoPrintOnValidate) {
+              const nameOrg = extractNameAndOrganization(ticketPayload);
+              printSticker({ ...nameOrg, page: stickerPageSize });
+            }
+          } else {
+            // FIX 5: Badge mode — ALWAYS auto-open PDF preview modal after successful validation
+            // Use extracted (local var) — guaranteed fresh, no stale closure issue
             await handlePrintBadge(extracted);
           }
         }
@@ -725,6 +738,8 @@ const TicketScanner = React.memo(function TicketScanner({
       );
     }
 
+    // Badge mode — show matched info + manual Print Badge button
+    // (auto-preview already triggered in handleRawScan, this is a fallback)
     const t = validation.ticket || {};
     return (
       <div className="p-3 bg-green-50 text-green-800 rounded">
@@ -742,8 +757,10 @@ const TicketScanner = React.memo(function TicketScanner({
           <button
             className="px-4 py-2 bg-[#196e87] text-white rounded hover:bg-[#0f5568]"
             onClick={() => {
-              console.log("Print Badge button clicked, ticketId:", ticketId);
-              handlePrintBadge(ticketId || ticketDataRef.current.ticketId);
+              // FIX 6: Always read from ref — never from stale state closure
+              const id = ticketDataRef.current.ticketId || ticketId;
+              console.log("Print Badge button clicked, resolvedId:", id);
+              handlePrintBadge(id);
             }}
             disabled={isLoadingPDF}
           >
@@ -765,27 +782,62 @@ const TicketScanner = React.memo(function TicketScanner({
 
     const currentPdfUrl = pdfUrl || ticketDataRef.current.pdfUrl;
     const currentTicketId = ticketId || ticketDataRef.current.ticketId;
+    const currentValidation =
+      validation || ticketDataRef.current.validation;
 
     return (
+      // FIX 7: Backdrop does NOT have onClick — modal stays open until user clicks a button
       <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+          {/* Header */}
           <div className="flex items-center justify-between p-4 border-b">
             <h3 className="text-lg font-semibold">
-              Badge Preview - {currentTicketId}
+              Badge Preview — {currentTicketId}
             </h3>
+            {/* × button explicitly closes modal */}
             <button
               onClick={handleClosePreview}
               className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+              title="Close preview"
             >
               ×
             </button>
           </div>
 
+          {/* Body */}
           <div
             className="flex-1 p-4 overflow-auto"
             style={{ minHeight: "60vh" }}
           >
-            {currentPdfUrl ? (
+            {isLoadingPDF ? (
+              // Show spinner while PDF is being fetched
+              <div className="flex items-center justify-center h-full" style={{ minHeight: "60vh" }}>
+                <div className="text-center text-gray-500">
+                  <div className="text-4xl mb-3">⏳</div>
+                  <div className="text-lg font-semibold">Loading badge...</div>
+                  <div className="text-sm mt-1 text-gray-400">
+                    Fetching PDF from server
+                  </div>
+                </div>
+              </div>
+            ) : printError ? (
+              <div className="flex items-center justify-center h-full" style={{ minHeight: "60vh" }}>
+                <div className="text-center text-red-600">
+                  <div className="text-4xl mb-2">⚠️</div>
+                  <div className="text-lg font-semibold">Error Loading Badge</div>
+                  <div className="text-sm mt-2">{printError}</div>
+                  <button
+                    className="mt-4 px-4 py-2 bg-red-100 hover:bg-red-200 rounded text-red-700"
+                    onClick={() => {
+                      const id = ticketDataRef.current.ticketId || ticketId;
+                      handlePrintBadge(id);
+                    }}
+                  >
+                    🔄 Retry
+                  </button>
+                </div>
+              </div>
+            ) : currentPdfUrl ? (
               <iframe
                 id="badge-preview-frame"
                 src={currentPdfUrl}
@@ -793,40 +845,33 @@ const TicketScanner = React.memo(function TicketScanner({
                 style={{ minHeight: "60vh" }}
                 title="Badge Preview"
               />
-            ) : printError ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center text-red-600">
-                  <div className="text-4xl mb-2">⚠️</div>
-                  <div className="text-lg font-semibold">
-                    Error Loading Preview
-                  </div>
-                  <div className="text-sm mt-2">{printError}</div>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center text-gray-500">
-                  <div className="animate-spin text-4xl mb-2">⏳</div>
-                  <div className="text-lg">Loading preview...</div>
-                </div>
-              </div>
-            )}
+            ) : null}
           </div>
 
+          {/* Footer */}
           <div className="flex items-center justify-between p-4 border-t bg-gray-50">
             <div className="text-sm text-gray-600">
-              {validation?.ticket?.name && (
+              {currentValidation?.ticket?.name && (
                 <span>
-                  Attendee: <strong>{validation.ticket.name}</strong>
+                  Attendee:{" "}
+                  <strong>{currentValidation.ticket.name}</strong>
                 </span>
               )}
             </div>
             <div className="flex gap-2">
+              {/* Scan Again — resets everything and restarts camera */}
+              <button
+                onClick={handleScanAgain}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded"
+              >
+                🔄 Scan Again
+              </button>
+              {/* Close — dismisses preview but keeps validation result */}
               <button
                 onClick={handleClosePreview}
                 className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded"
               >
-                Cancel
+                Close
               </button>
               <button
                 onClick={handleDownload}
@@ -879,7 +924,7 @@ const TicketScanner = React.memo(function TicketScanner({
                 </div>
                 <div className="text-sm mt-1">
                   {validation?.ok
-                    ? "Click 'Print Badge' to preview and print"
+                    ? "Badge preview is open"
                     : message.includes("error") || message.includes("Error")
                       ? "Camera access failed"
                       : "Camera stopped"}
