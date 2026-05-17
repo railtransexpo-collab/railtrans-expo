@@ -1,28 +1,18 @@
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useCallback,
-} from "react";
-import { createRoot } from "react-dom/client";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import jsQR from "jsqr";
 
+console.log("🔵 [TicketScanner] Module loaded");
+
 const API_BASE =
-  (typeof process !== "undefined" &&
-    process.env &&
-    process.env.REACT_APP_API_BASE) ||
-  (typeof window !== "undefined" &&
-    (window.__API_BASE__ || window.__BACKEND_ORIGIN__ || null)) ||
-  (typeof window !== "undefined" &&
-    window.location &&
-    window.location.origin) ||
+  (typeof process !== "undefined" && process.env?.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" && (window.__API_BASE__ || window.__BACKEND_ORIGIN__)) ||
+  (typeof window !== "undefined" && window.location?.origin) ||
   "";
 
 function apiUrl(path) {
-  if (!path) path = "";
+  if (!path) return "";
   const s = String(path).trim();
-  if (!s) return s;
   if (/^https?:\/\//i.test(s)) return s;
   const base = String(API_BASE).replace(/\/$/, "");
   return `${base}${s.startsWith("/") ? s : `/${s}`}`;
@@ -82,299 +72,277 @@ function extractNameAndOrganization(ticket) {
   return { name: name || "Guest", organization: organization || "Visitor" };
 }
 
-function normalizeStickerText(v) {
-  try { return String(v ?? "").replace(/\s+/g, " ").trim() || ""; }
-  catch { return ""; }
-}
-
-function printSticker({ name, organization, page = { w: "80mm", h: "50mm" } }) {
-  const printWin = window.open("", "_blank", "width=600,height=400");
-  if (!printWin) { alert("Please allow popups to print stickers"); return false; }
-  const safeName = normalizeStickerText(name) || "Guest";
-  const safeOrg = normalizeStickerText(organization) || "Visitor";
-  const style = `<style>
-    @page{size:${page.w} ${page.h};margin:0}
-    @media print{body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-    *{margin:0;padding:0;box-sizing:border-box}html,body{height:100%;background:#fff}
-    body{display:flex;align-items:center;justify-content:center;font-family:Arial,Helvetica,sans-serif}
-    .sticker-wrap{width:${page.w};height:${page.h};display:flex;align-items:stretch;justify-content:stretch}
-    .sticker{width:100%;height:100%;padding:8mm 6mm;display:flex;flex-direction:column;justify-content:center;background:#fff;border:2px solid #1B3A8A;border-radius:4px}
-    .name{font-size:20pt;font-weight:800;line-height:1.2;color:#1B3A8A;margin-bottom:4px;word-break:break-word}
-    .org{font-size:12pt;font-weight:600;line-height:1.3;color:#333;word-break:break-word}
-    .sep{height:1px;background:#ddd;margin:6px 0}
-    .evt{font-size:8pt;color:#666;margin-top:6px;text-align:center}
-  </style>`;
-  printWin.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Sticker</title>${style}</head>
-    <body><div class="sticker-wrap"><div class="sticker">
-      <div class="name">${safeName}</div><div class="org">${safeOrg}</div>
-      <div class="sep"></div><div class="evt">RailTrans Expo 2026</div>
-    </div></div></body></html>`);
-  printWin.document.close();
-  return true;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// IMPERATIVE MODAL MANAGER
-// Creates a real DOM node appended to document.body and mounts a React root
-// into it. Completely bypasses the TicketScanner render tree — nothing React
-// does to TicketScanner can ever unmount or close this modal.
-// ─────────────────────────────────────────────────────────────────────────────
-let _modalRoot = null;
-let _modalContainer = null;
-let _currentPdfBlobUrl = null;
-
-function destroyModal() {
-  if (_currentPdfBlobUrl) {
-    try { URL.revokeObjectURL(_currentPdfBlobUrl); } catch (_) {}
-    _currentPdfBlobUrl = null;
-  }
-  if (_modalRoot) {
-    try { _modalRoot.unmount(); } catch (_) {}
-    _modalRoot = null;
-  }
-  if (_modalContainer && _modalContainer.parentNode) {
-    _modalContainer.parentNode.removeChild(_modalContainer);
-    _modalContainer = null;
-  }
-}
-
-function ModalContent({ ticketId, attendeeName, printUrl, onClose, onScanAgain }) {
-  const [isLoading, setIsLoading] = useState(true);
+// ── Portal Badge Modal ────────────────────────────────────────────────────────
+function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain }) {
+  console.log("🟢 [BadgeModal] Rendering for ticket:", ticketId);
+  
+  const [status, setStatus] = useState("loading"); // "loading" | "ready" | "error"
   const [pdfUrl, setPdfUrl] = useState(null);
-  const [error, setError] = useState(null);
-  const cancelledRef = useRef(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const pdfUrlRef = useRef(null);
+  const mountedRef = useRef(true);
+  const fetchAttemptedRef = useRef(false);
 
+  // Fetch PDF
   useEffect(() => {
-    cancelledRef.current = false;
-    if (!ticketId) { setError("No ticket ID"); setIsLoading(false); return; }
+    console.log("🟢 [BadgeModal] useEffect for PDF fetch, ticketId:", ticketId);
+    
+    if (!ticketId) {
+      console.log("🔴 [BadgeModal] No ticketId, setting error");
+      setStatus("error");
+      setErrorMsg("No ticket ID provided");
+      return;
+    }
 
-    fetch(printUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticketId: String(ticketId) }),
-      credentials: "include",
-    })
-      .then(async (res) => {
-        if (cancelledRef.current) return null;
+    if (fetchAttemptedRef.current) {
+      console.log("🟡 [BadgeModal] Fetch already attempted, skipping");
+      return;
+    }
+
+    fetchAttemptedRef.current = true;
+    let cancelled = false;
+
+    async function fetchPdf() {
+      console.log("🟢 [BadgeModal] Starting PDF fetch for:", ticketId);
+      setStatus("loading");
+      
+      try {
+        const res = await fetch(printUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticketId: String(ticketId) }),
+          credentials: "include",
+        });
+
+        console.log("🟢 [BadgeModal] Response status:", res.status);
+
         if (!res.ok) {
           const js = await res.json().catch(() => null);
           throw new Error(js?.error || `Server error ${res.status}`);
         }
-        const ct = res.headers.get("content-type") || "";
-        if (!ct.includes("application/pdf")) throw new Error("Server did not return a PDF");
-        return res.blob();
-      })
-      .then((blob) => {
-        if (cancelledRef.current || !blob) return;
-        if (_currentPdfBlobUrl) URL.revokeObjectURL(_currentPdfBlobUrl);
-        const url = URL.createObjectURL(blob);
-        _currentPdfBlobUrl = url;
-        setPdfUrl(url);
-      })
-      .catch((e) => {
-        if (cancelledRef.current) return;
-        setError(e.message || "Unknown error");
-      })
-      .finally(() => {
-        if (!cancelledRef.current) setIsLoading(false);
-      });
 
-    return () => { cancelledRef.current = true; };
+        const ct = res.headers.get("content-type") || "";
+        console.log("🟢 [BadgeModal] Content-Type:", ct);
+        
+        if (!ct.includes("application/pdf")) {
+          throw new Error("Server did not return a PDF (got: " + ct + ")");
+        }
+
+        const blob = await res.blob();
+        console.log("🟢 [BadgeModal] Blob size:", blob.size, "bytes");
+
+        if (cancelled) {
+          console.log("🟡 [BadgeModal] Cancelled after blob");
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        pdfUrlRef.current = url;
+        setPdfUrl(url);
+        setStatus("ready");
+        console.log("🟢 [BadgeModal] PDF loaded successfully, URL:", url.substring(0, 50) + "...");
+      } catch (err) {
+        console.error("🔴 [BadgeModal] Fetch error:", err);
+        if (!cancelled) {
+          setStatus("error");
+          setErrorMsg(err.message || "Unknown error");
+        }
+      }
+    }
+
+    fetchPdf();
+
+    return () => {
+      console.log("🟡 [BadgeModal] Cleanup - cancelling fetch");
+      cancelled = true;
+    };
   }, [ticketId, printUrl]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      console.log("🟡 [BadgeModal] Unmounting, revoking URL");
+      mountedRef.current = false;
+      if (pdfUrlRef.current) {
+        URL.revokeObjectURL(pdfUrlRef.current);
+        pdfUrlRef.current = null;
+      }
+    };
+  }, []);
+
   function handlePrint() {
-    const iframe = document.querySelector("#__badge_iframe__");
-    if (!iframe) return;
-    // Wait for iframe to fully load before printing
-    if (iframe.contentDocument && iframe.contentDocument.readyState === "complete") {
-      iframe.contentWindow.focus();
-      iframe.contentWindow.print();
+    console.log("🟢 [BadgeModal] handlePrint called, pdfUrl:", pdfUrl);
+    if (!pdfUrl) return;
+
+    // Method 1: Try window.open
+    const win = window.open(pdfUrl, "_blank", "width=800,height=600");
+    if (win) {
+      console.log("🟢 [BadgeModal] Window opened, waiting for load");
+      const checkInterval = setInterval(() => {
+        try {
+          if (win.document && win.document.readyState === "complete") {
+            console.log("🟢 [BadgeModal] Window loaded, printing");
+            clearInterval(checkInterval);
+            setTimeout(() => win.print(), 300);
+          }
+        } catch (e) {
+          clearInterval(checkInterval);
+        }
+      }, 200);
     } else {
+      console.log("🟡 [BadgeModal] Window blocked, using iframe fallback");
+      // Method 2: iframe fallback
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:999999;border:none;";
+      iframe.src = pdfUrl;
+      iframe.id = "badge-print-frame-" + Date.now();
+      document.body.appendChild(iframe);
       iframe.onload = () => {
-        iframe.contentWindow.focus();
-        iframe.contentWindow.print();
+        console.log("🟢 [BadgeModal] Iframe loaded, printing");
+        setTimeout(() => {
+          try {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+          } catch (e) {
+            console.error("🔴 [BadgeModal] Iframe print failed:", e);
+            alert("Print failed. Please try again or use Ctrl+P after the PDF opens.");
+          }
+        }, 500);
       };
     }
   }
 
   function handleRetry() {
-    if (_currentPdfBlobUrl) { URL.revokeObjectURL(_currentPdfBlobUrl); _currentPdfBlobUrl = null; }
+    console.log("🟢 [BadgeModal] Retry triggered");
+    if (pdfUrlRef.current) {
+      URL.revokeObjectURL(pdfUrlRef.current);
+      pdfUrlRef.current = null;
+    }
     setPdfUrl(null);
-    setError(null);
-    setIsLoading(true);
-    cancelledRef.current = false;
+    setErrorMsg(null);
+    setStatus("loading");
+    fetchAttemptedRef.current = false;
 
-    fetch(printUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticketId: String(ticketId) }),
-      credentials: "include",
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const js = await res.json().catch(() => null);
-          throw new Error(js?.error || `Server error ${res.status}`);
-        }
-        return res.blob();
-      })
-      .then((blob) => {
+    // Re-trigger fetch by forcing re-render with key change? No, we do it manually
+    async function retryFetch() {
+      try {
+        const res = await fetch(printUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticketId: String(ticketId) }),
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed");
+        const blob = await res.blob();
+        if (!mountedRef.current) return;
         const url = URL.createObjectURL(blob);
-        _currentPdfBlobUrl = url;
+        pdfUrlRef.current = url;
         setPdfUrl(url);
-      })
-      .catch((e) => setError(e.message || "Unknown error"))
-      .finally(() => setIsLoading(false));
+        setStatus("ready");
+      } catch (err) {
+        if (mountedRef.current) {
+          setStatus("error");
+          setErrorMsg(err.message);
+        }
+      }
+    }
+    retryFetch();
   }
 
-  const S = {
-    overlay: {
-      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-      zIndex: 2147483647, // max z-index possible
-      display: "flex", alignItems: "center", justifyContent: "center",
-      padding: "16px",
-      background: "rgba(0,0,0,0.6)",
-    },
-    card: {
-      background: "#fff", borderRadius: "12px",
-      boxShadow: "0 32px 100px rgba(0,0,0,0.4)",
-      width: "100%", maxWidth: "860px", maxHeight: "92vh",
-      display: "flex", flexDirection: "column", overflow: "hidden",
-    },
-    header: {
-      display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "15px 20px", borderBottom: "1px solid #e5e7eb", flexShrink: 0,
-    },
-    body: {
-      flex: 1, overflow: "auto", minHeight: "58vh",
-      display: "flex", flexDirection: "column",
-    },
-    center: {
-      flex: 1, display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center", minHeight: "58vh",
-    },
-    footer: {
-      display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "13px 20px", borderTop: "1px solid #e5e7eb",
-      background: "#f9fafb", flexShrink: 0,
-    },
-    btnGray: {
-      padding: "9px 18px", background: "#e5e7eb", border: "none",
-      borderRadius: "6px", cursor: "pointer", fontWeight: 500, fontSize: "14px",
-    },
-    btnPrint: (enabled) => ({
-      padding: "9px 20px", border: "none", borderRadius: "6px",
-      fontWeight: 600, fontSize: "14px",
-      background: enabled ? "#196e87" : "#9ca3af",
-      color: "#fff", cursor: enabled ? "pointer" : "not-allowed",
-    }),
-    btnClose: {
-      background: "none", border: "none", fontSize: "28px",
-      cursor: "pointer", color: "#6b7280", lineHeight: 1, padding: "2px 8px",
-    },
-    btnRetry: {
-      marginTop: "18px", padding: "9px 22px", background: "#fee2e2",
-      border: "none", borderRadius: "6px", cursor: "pointer",
-      color: "#dc2626", fontWeight: 600, fontSize: "14px",
-    },
-  };
+  const attendeeName = validation?.ticket?.name || "";
 
-  return (
-    <div style={S.overlay}>
-      <div style={S.card}>
+  return createPortal(
+    <div
+      style={{
+        position: "fixed",
+        top: 0, left: 0, right: 0, bottom: 0,
+        zIndex: 99999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        background: "rgba(0,0,0,0.6)",
+      }}
+      onClick={(e) => {
+        // Don't close when clicking backdrop - user must use buttons
+        e.stopPropagation();
+      }}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: 12,
+          boxShadow: "0 25px 80px rgba(0,0,0,0.4)",
+          width: "100%",
+          maxWidth: 880,
+          maxHeight: "92vh",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
         {/* Header */}
-        <div style={S.header}>
-          <span style={{ fontWeight: 700, fontSize: "16px" }}>
-            Badge Preview — {ticketId}
-          </span>
-          <button style={S.btnClose} onClick={onClose} title="Close">×</button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 20px", borderBottom: "1px solid #e5e7eb", flexShrink: 0 }}>
+          <strong style={{ fontSize: 16 }}>Badge Preview — {ticketId}</strong>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 26, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>×</button>
         </div>
 
         {/* Body */}
-        <div style={S.body}>
-          {isLoading && (
-            <div style={S.center}>
-              <div style={{ fontSize: "52px", marginBottom: "14px" }}>⏳</div>
-              <div style={{ fontSize: "18px", fontWeight: 600, color: "#374151" }}>Loading badge...</div>
-              <div style={{ fontSize: "13px", marginTop: "6px", color: "#9ca3af" }}>Fetching PDF from server</div>
+        <div style={{ flex: 1, minHeight: 450, overflow: "auto", display: "flex", flexDirection: "column" }}>
+          {status === "loading" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#6b7280" }}>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>⏳</div>
+              <div style={{ fontSize: 18, fontWeight: 600 }}>Loading badge...</div>
+              <div style={{ fontSize: 13, marginTop: 6 }}>Fetching PDF from server</div>
+              <div style={{ fontSize: 12, marginTop: 4, color: "#9ca3af" }}>Ticket: {ticketId}</div>
             </div>
           )}
-          {!isLoading && error && (
-            <div style={{ ...S.center, color: "#dc2626" }}>
-              <div style={{ fontSize: "52px", marginBottom: "12px" }}>⚠️</div>
-              <div style={{ fontSize: "18px", fontWeight: 600 }}>Error Loading Badge</div>
-              <div style={{ fontSize: "13px", marginTop: "8px", maxWidth: "360px", textAlign: "center" }}>{error}</div>
-              <button style={S.btnRetry} onClick={handleRetry}>🔄 Retry</button>
+
+          {status === "error" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#dc2626", padding: 20 }}>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>⚠️</div>
+              <div style={{ fontSize: 18, fontWeight: 600 }}>Error Loading Badge</div>
+              <div style={{ fontSize: 13, marginTop: 8, textAlign: "center", maxWidth: 400 }}>{errorMsg}</div>
+              <button onClick={handleRetry} style={{ marginTop: 16, padding: "10px 24px", background: "#fee2e2", color: "#dc2626", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
+                🔄 Retry
+              </button>
             </div>
           )}
-          {!isLoading && !error && pdfUrl && (
+
+          {status === "ready" && pdfUrl && (
             <iframe
-              id="__badge_iframe__"
               src={pdfUrl}
-              style={{ flex: 1, width: "100%", minHeight: "58vh", border: "none", display: "block" }}
+              style={{ flex: 1, width: "100%", minHeight: 450, border: "none" }}
               title="Badge Preview"
             />
-          )}
-          {!isLoading && !error && !pdfUrl && (
-            <div style={{ ...S.center, color: "#9ca3af" }}>
-              <div style={{ fontSize: "52px", marginBottom: "10px" }}>📄</div>
-              <div>Waiting for PDF...</div>
-            </div>
           )}
         </div>
 
         {/* Footer */}
-        <div style={S.footer}>
-          <div style={{ fontSize: "13px", color: "#6b7280" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 20px", borderTop: "1px solid #e5e7eb", background: "#f9fafb", flexShrink: 0 }}>
+          <div style={{ fontSize: 13, color: "#6b7280" }}>
             {attendeeName && <span>Attendee: <strong>{attendeeName}</strong></span>}
           </div>
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button style={S.btnGray} onClick={onScanAgain}>🔄 Scan Again</button>
-            <button style={S.btnGray} onClick={onClose}>Close</button>
-            <button style={S.btnPrint(!!pdfUrl)} onClick={handlePrint} disabled={!pdfUrl}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onScanAgain} style={{ padding: "8px 16px", background: "#e5e7eb", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>
+              🔄 Scan Again
+            </button>
+            <button onClick={onClose} style={{ padding: "8px 16px", background: "#e5e7eb", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>
+              Close
+            </button>
+            <button onClick={handlePrint} disabled={status !== "ready"} style={{ padding: "8px 20px", border: "none", borderRadius: 6, cursor: status === "ready" ? "pointer" : "not-allowed", fontSize: 14, fontWeight: 600, background: status === "ready" ? "#196e87" : "#9ca3af", color: "#fff" }}>
               🖨️ Print
             </button>
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function openBadgeModal({ ticketId, attendeeName, printUrl, onClose, onScanAgain }) {
-  // Always destroy any previous modal first
-  destroyModal();
-
-  const container = document.createElement("div");
-  container.id = "__badge_modal_root__";
-  document.body.appendChild(container);
-  _modalContainer = container;
-
-  const root = createRoot(container);
-  _modalRoot = root;
-
-  function close() {
-    destroyModal();
-    if (onClose) onClose();
-  }
-
-  function scanAgain() {
-    destroyModal();
-    if (onScanAgain) onScanAgain();
-  }
-
-  root.render(
-    <ModalContent
-      ticketId={ticketId}
-      attendeeName={attendeeName}
-      printUrl={printUrl}
-      onClose={close}
-      onScanAgain={scanAgain}
-    />
+    </div>,
+    document.body
   );
 }
 
 // ── Main Scanner ──────────────────────────────────────────────────────────────
-const TicketScanner = React.memo(function TicketScanner({
+export default function TicketScanner({
   autoPrintOnValidate = false,
   mode = "badge",
   showDebug = false,
@@ -382,21 +350,28 @@ const TicketScanner = React.memo(function TicketScanner({
   onError,
   onSuccess,
 }) {
+  console.log("🔵 [TicketScanner] Component function called");
+
+  // Refs - survive re-renders
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const rafRef = useRef(null);
   const streamRef = useRef(null);
-  const isLockedRef = useRef(false);
-  const isMountedRef = useRef(true);
-  const startCameraRef = useRef(null);
-  const handleRawScanRef = useRef(null);
+  const rafRef = useRef(null);
+  const mountedRef = useRef(true);
+  const lockedRef = useRef(false);
+  const ticketIdRef = useRef(null);
+  const validationRef = useRef(null);
+  const cameraStartedRef = useRef(false);
 
+  // State
   const [message, setMessage] = useState("Initializing camera...");
-  const [rawPayload, setRawPayload] = useState("");
+  const [showVideo, setShowVideo] = useState(false);
   const [ticketId, setTicketId] = useState(null);
   const [validation, setValidation] = useState(null);
-  const [showVideo, setShowVideo] = useState(true);
+  const [rawPayload, setRawPayload] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
 
+  // URLs
   const validateUrl = useMemo(() => apiUrl("/api/tickets/validate"), []);
   const printUrl = useMemo(() => apiUrl("/api/tickets/scan"), []);
   const isStickerMode = String(mode).toLowerCase() === "sticker";
@@ -406,51 +381,111 @@ const TicketScanner = React.memo(function TicketScanner({
     return extractNameAndOrganization(validation.ticket);
   }, [validation]);
 
-  // Cleanup camera
-  const cleanup = useCallback(() => {
+  // ===== CAMERA FUNCTIONS (plain functions, no useCallback) =====
+
+  function stopCamera() {
+    console.log("🔵 [TicketScanner] stopCamera called");
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
-    if (videoRef.current) { videoRef.current.srcObject = null; }
-  }, []);
-
-  // Destroy modal when scanner unmounts (route change etc.)
-  useEffect(() => {
-    return () => { destroyModal(); };
-  }, []);
-
-  const handleScanAgain = useCallback(() => {
-    setValidation(null);
-    setTicketId(null);
-    setRawPayload("");
-    isLockedRef.current = false;
-    setMessage("Starting camera...");
-    if (startCameraRef.current) startCameraRef.current();
-  }, []);
-
-  const handleCloseModal = useCallback(() => {
-    setMessage("✅ Ticket matched — scan another or print again");
-  }, []);
-
-  const handleRawScan = useCallback(async (data) => {
-    if (isLockedRef.current) return;
-    isLockedRef.current = true;
-    cleanup();
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    if (videoRef.current) videoRef.current.srcObject = null;
     setShowVideo(false);
+  }
+
+  async function startCamera() {
+    console.log("🔵 [TicketScanner] startCamera called, cameraStartedRef:", cameraStartedRef.current);
+    
+    stopCamera();
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+
+      if (!mountedRef.current) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      setShowVideo(true);
+      setMessage("Scanning for QR code...");
+      cameraStartedRef.current = true;
+      console.log("🔵 [TicketScanner] Camera started successfully");
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+      function tick() {
+        if (!mountedRef.current) return;
+        if (lockedRef.current) return;
+        if (!videoRef.current || !canvasRef.current) return;
+
+        if (videoRef.current.readyState < 2) {
+          rafRef.current = requestAnimationFrame(tick);
+          return;
+        }
+
+        try {
+          canvas.width = videoRef.current.videoWidth;
+          canvas.height = videoRef.current.videoHeight;
+          ctx.drawImage(videoRef.current, 0, 0);
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const qr = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+
+          if (qr && !lockedRef.current) {
+            console.log("🔵 [TicketScanner] QR code detected!");
+            onQrDetected(qr.data);
+            return;
+          }
+        } catch (e) {
+          // Silently ignore frame read errors
+        }
+
+        if (mountedRef.current && !lockedRef.current) {
+          rafRef.current = requestAnimationFrame(tick);
+        }
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    } catch (err) {
+      console.error("🔴 [TicketScanner] Camera error:", err);
+      setMessage("Camera error: " + (err.message || err));
+      setShowVideo(false);
+      cameraStartedRef.current = false;
+    }
+  }
+
+  // ===== QR DETECTION =====
+
+  async function onQrDetected(data) {
+    console.log("🔵 [TicketScanner] onQrDetected, locking scanner");
+    lockedRef.current = true;
+    stopCamera();
+
     setRawPayload(String(data));
     setMessage("QR detected — processing...");
     setValidation(null);
 
     const extracted = extractTicketId(String(data));
     if (!extracted) {
-      setMessage("QR scanned but no ticket id found.");
-      setValidation({ ok: false, error: "No ticket id extracted" });
-      if (onError) onError(new Error("No ticket id extracted"));
-      setTimeout(() => { if (isMountedRef.current) isLockedRef.current = false; }, 2000);
+      console.log("🔴 [TicketScanner] No ticket ID found in QR");
+      setMessage("No ticket ID found in QR code");
+      setValidation({ ok: false, error: "No ticket ID extracted" });
+      if (onError) onError(new Error("No ticket ID extracted"));
+      setTimeout(() => { if (mountedRef.current) lockedRef.current = false; }, 2000);
       return;
     }
 
+    ticketIdRef.current = extracted;
     setTicketId(extracted);
-    setMessage(`Validating ticket: ${extracted}...`);
+    setMessage("Validating ticket: " + extracted + "...");
 
     try {
       const res = await fetch(validateUrl, {
@@ -459,109 +494,98 @@ const TicketScanner = React.memo(function TicketScanner({
         body: JSON.stringify({ ticketId: extracted }),
         credentials: "include",
       });
-      const js = await res.json().catch(() => ({}));
+      const json = await res.json().catch(() => ({}));
 
-      if (!res.ok || !js || !js.success) {
-        setValidation({ ok: false, error: js?.error || `Validate failed (${res.status})` });
+      if (!res.ok || !json.success) {
+        console.log("🔴 [TicketScanner] Ticket not matched");
+        setValidation({ ok: false, error: json.error || "Ticket not found" });
         setMessage("❌ Ticket not matched");
-        if (onError) onError(new Error(js?.error || `Validate failed (${res.status})`));
-        setTimeout(() => { if (isMountedRef.current) isLockedRef.current = false; }, 2000);
-      } else {
-        const ticketPayload = js.ticket || js;
-        const val = { ok: true, ticket: ticketPayload };
-        setValidation(val);
-        setMessage("✅ Ticket matched");
-        if (onSuccess) onSuccess(ticketPayload);
-
-        if (isStickerMode) {
-          if (autoPrintOnValidate) {
-            const nameOrg = extractNameAndOrganization(ticketPayload);
-            printSticker({ ...nameOrg, page: stickerPageSize });
-          }
-        } else {
-          // Open modal imperatively — React render cycle cannot touch it
-          openBadgeModal({
-            ticketId: extracted,
-            attendeeName: ticketPayload?.name || ticketPayload?.full_name || "",
-            printUrl,
-            onClose: handleCloseModal,
-            onScanAgain: handleScanAgain,
-          });
-        }
+        if (onError) onError(new Error(json.error || "Ticket not found"));
+        setTimeout(() => { if (mountedRef.current) lockedRef.current = false; }, 2000);
+        return;
       }
-    } catch (e) {
-      setValidation({ ok: false, error: e.message || String(e) });
-      setMessage("Validation request error");
-      if (onError) onError(e);
-      setTimeout(() => { if (isMountedRef.current) isLockedRef.current = false; }, 2000);
-    }
-  }, [cleanup, validateUrl, onError, onSuccess, autoPrintOnValidate, isStickerMode, printUrl, handleCloseModal, handleScanAgain, stickerPageSize]);
 
-  useEffect(() => { handleRawScanRef.current = handleRawScan; }, [handleRawScan]);
+      // SUCCESS
+      console.log("🟢 [TicketScanner] Ticket matched!");
+      const val = { ok: true, ticket: json.ticket };
+      validationRef.current = val;
+      setValidation(val);
+      setMessage("✅ Ticket matched");
+      if (onSuccess) onSuccess(json.ticket);
 
-  const startCamera = useCallback(async () => {
-    try {
-      cleanup();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      if (!isMountedRef.current) { stream.getTracks().forEach((t) => t.stop()); return; }
-      streamRef.current = stream;
-      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
-      setShowVideo(true);
-      setMessage("Scanning for QR…");
-
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
-      const tick = () => {
-        if (!isMountedRef.current || isLockedRef.current) return;
-        if (!videoRef.current || !canvasRef.current) return;
-        if (videoRef.current.readyState !== videoRef.current.HAVE_ENOUGH_DATA) {
-          rafRef.current = requestAnimationFrame(tick); return;
+      if (isStickerMode) {
+        if (autoPrintOnValidate) {
+          printSticker({ ...extractNameAndOrganization(json.ticket), page: stickerPageSize });
         }
-        try {
-          canvas.width = videoRef.current.videoWidth;
-          canvas.height = videoRef.current.videoHeight;
-          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
-          if (code && !isLockedRef.current) { handleRawScanRef.current(code.data); return; }
-        } catch (e) { console.warn("frame read error", e?.message); }
-        if (isMountedRef.current && !isLockedRef.current) rafRef.current = requestAnimationFrame(tick);
-      };
-      rafRef.current = requestAnimationFrame(tick);
+      } else {
+        // Open the modal
+        console.log("🟢 [TicketScanner] Opening badge modal");
+        setModalOpen(true);
+      }
+
+      // lockedRef stays TRUE - scanner remains locked
     } catch (err) {
-      setMessage(`Camera error: ${err.message || err}`);
-      setShowVideo(false);
-      if (onError) onError(err);
+      console.error("🔴 [TicketScanner] Validation error:", err);
+      setValidation({ ok: false, error: err.message });
+      setMessage("Validation error");
+      setTimeout(() => { if (mountedRef.current) lockedRef.current = false; }, 2000);
     }
-  }, [cleanup, onError]);
+  }
 
-  useEffect(() => { startCameraRef.current = startCamera; }, [startCamera]);
+  // ===== SCAN AGAIN =====
 
-  useEffect(() => {
-    isMountedRef.current = true;
-    isLockedRef.current = false;
+  function handleScanAgain() {
+    console.log("🔵 [TicketScanner] handleScanAgain called");
+    setModalOpen(false);
+    setValidation(null);
+    setTicketId(null);
+    setRawPayload("");
+    ticketIdRef.current = null;
+    validationRef.current = null;
+    lockedRef.current = false;
     startCamera();
+  }
+
+  // ===== CLOSE MODAL =====
+
+  function handleCloseModal() {
+    console.log("🔵 [TicketScanner] handleCloseModal called");
+    setModalOpen(false);
+    setMessage("✅ Ticket matched — you can print again or scan another");
+  }
+
+  // ===== MOUNT - Start camera ONCE =====
+  useEffect(() => {
+    console.log("🔵 [TicketScanner] Mount effect running");
+    mountedRef.current = true;
+    
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      if (mountedRef.current && !cameraStartedRef.current) {
+        startCamera();
+      }
+    }, 300);
+
     return () => {
-      isMountedRef.current = false;
-      cleanup();
-      destroyModal();
+      console.log("🔵 [TicketScanner] Unmount effect running");
+      clearTimeout(timer);
+      mountedRef.current = false;
+      stopCamera();
     };
-  }, [startCamera, cleanup]);
+  }, []); // EMPTY dependency array - runs ONLY on mount/unmount
+
+  // ===== RENDER =====
+  console.log("🔵 [TicketScanner] Rendering, modalOpen:", modalOpen, "showVideo:", showVideo);
 
   function renderValidation() {
     if (!validation) return null;
 
     if (!validation.ok) {
       return (
-        <div className="p-3 bg-red-50 text-red-700 rounded">
-          <div><strong>Not matched</strong></div>
-          <div className="text-sm">{validation.error || "Ticket not found"}</div>
-          <button className="mt-2 px-3 py-1 bg-red-100 hover:bg-red-200 rounded" onClick={handleScanAgain}>
+        <div style={{ padding: 12, background: "#fef2f2", borderRadius: 8, color: "#991b1b", marginTop: 8 }}>
+          <strong>Not matched</strong>
+          <div style={{ fontSize: 13 }}>{validation.error || "Ticket not found"}</div>
+          <button onClick={handleScanAgain} style={{ marginTop: 8, padding: "6px 14px", background: "#fecaca", border: "none", borderRadius: 4, cursor: "pointer" }}>
             Scan again
           </button>
         </div>
@@ -570,18 +594,16 @@ const TicketScanner = React.memo(function TicketScanner({
 
     if (isStickerMode) {
       return (
-        <div className="p-3 rounded border bg-white text-gray-900">
-          <div className="border rounded bg-gray-50 p-3" style={{ maxWidth: 420 }}>
-            <div className="text-xl font-extrabold leading-tight text-[#1B3A8A]">{stickerData.name || "—"}</div>
-            <div className="text-base font-semibold leading-snug mt-1 text-gray-700">{stickerData.organization || "—"}</div>
+        <div style={{ padding: 12, background: "#fff", borderRadius: 8, border: "1px solid #e5e7eb", marginTop: 8 }}>
+          <div style={{ background: "#f9fafb", padding: 12, borderRadius: 6 }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#1B3A8A" }}>{stickerData.name || "—"}</div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: "#374151", marginTop: 4 }}>{stickerData.organization || "—"}</div>
           </div>
-          <div className="mt-3 flex gap-2">
-            <button
-              className="px-4 py-2 bg-[#196e87] text-white rounded hover:bg-[#0f5568]"
-              onClick={() => printSticker({ ...stickerData, page: stickerPageSize })}
-              disabled={!stickerData.name && !stickerData.organization}
-            >🖨️ Print Sticker</button>
-            <button className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded" onClick={handleScanAgain}>
+          <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+            <button onClick={() => printSticker({ ...stickerData, page: stickerPageSize })} style={{ padding: "8px 16px", background: "#196e87", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
+              🖨️ Print Sticker
+            </button>
+            <button onClick={handleScanAgain} style={{ padding: "8px 16px", background: "#e5e7eb", border: "none", borderRadius: 6, cursor: "pointer" }}>
               Scan again
             </button>
           </div>
@@ -591,23 +613,24 @@ const TicketScanner = React.memo(function TicketScanner({
 
     const t = validation.ticket || {};
     return (
-      <div className="p-3 bg-green-50 text-green-800 rounded">
-        <div className="font-semibold">✅ Ticket Matched</div>
-        <div className="text-sm mt-1"><strong>Name:</strong> {t.name || t.full_name || "-"}</div>
-        <div className="text-sm"><strong>Company:</strong> {t.company || t.organization || "-"}</div>
-        <div className="text-sm"><strong>Category:</strong> {t.category || t.ticket_category || "-"}</div>
-        <div className="mt-3 flex gap-2">
+      <div style={{ padding: 12, background: "#f0fdf4", borderRadius: 8, color: "#166534", marginTop: 8 }}>
+        <strong>✅ Ticket Matched</strong>
+        <div style={{ fontSize: 13, marginTop: 4 }}>
+          <div>Name: {t.name || "—"}</div>
+          <div>Company: {t.company || "—"}</div>
+          {t.category && <div>Category: {t.category}</div>}
+        </div>
+        <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
           <button
-            className="px-4 py-2 bg-[#196e87] text-white rounded hover:bg-[#0f5568]"
-            onClick={() => openBadgeModal({
-              ticketId: ticketId,
-              attendeeName: t.name || t.full_name || "",
-              printUrl,
-              onClose: handleCloseModal,
-              onScanAgain: handleScanAgain,
-            })}
-          >🖨️ Print Badge</button>
-          <button className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded" onClick={handleScanAgain}>
+            onClick={() => {
+              console.log("🔵 [TicketScanner] Print Badge button clicked, ticketId:", ticketIdRef.current);
+              setModalOpen(true);
+            }}
+            style={{ padding: "8px 16px", background: "#196e87", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}
+          >
+            🖨️ Print Badge
+          </button>
+          <button onClick={handleScanAgain} style={{ padding: "8px 16px", background: "#e5e7eb", border: "none", borderRadius: 6, cursor: "pointer" }}>
             Scan again
           </button>
         </div>
@@ -616,72 +639,59 @@ const TicketScanner = React.memo(function TicketScanner({
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-3">
-      <div className="mb-3">
-        {showVideo ? (
-          <video
-            ref={videoRef}
-            style={{ width: "100%", maxHeight: 480, borderRadius: 8 }}
-            playsInline muted autoPlay
-          />
-        ) : (
-          <div
-            className="bg-gray-100 rounded-lg flex items-center justify-center"
-            style={{ width: "100%", height: 320, borderRadius: 8 }}
-          >
-            <div className="text-center text-gray-500">
-              <div className="text-4xl mb-2">{validation?.ok ? "✅" : "📷"}</div>
-              <div className="text-lg font-semibold">
-                {validation?.ok ? "Ticket Validated" : "Camera Paused"}
+    <>
+      <div style={{ background: "#fff", borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.1)", padding: 16 }}>
+        {/* Video / Placeholder */}
+        <div style={{ marginBottom: 12 }}>
+          {showVideo ? (
+            <video ref={videoRef} style={{ width: "100%", maxHeight: 420, borderRadius: 8, background: "#000" }} playsInline muted autoPlay />
+          ) : (
+            <div style={{ width: "100%", height: 320, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ textAlign: "center", color: "#6b7280" }}>
+                <div style={{ fontSize: 48, marginBottom: 8 }}>{validation?.ok ? "✅" : "📷"}</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{validation?.ok ? "Ticket Validated" : "Camera Off"}</div>
+                <div style={{ fontSize: 14, marginTop: 4 }}>
+                  {validation?.ok ? "Ready to print" : message.includes("error") ? "Camera error" : "Camera stopped"}
+                </div>
+                {!validation?.ok && !showVideo && !message.includes("Scanning") && (
+                  <button onClick={startCamera} style={{ marginTop: 12, padding: "10px 20px", background: "#3b82f6", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>
+                    🔄 Start Camera
+                  </button>
+                )}
               </div>
-              <div className="text-sm mt-1">
-                {validation?.ok
-                  ? "Badge preview is open"
-                  : message.toLowerCase().includes("error")
-                  ? "Camera access failed"
-                  : "Camera stopped"}
-              </div>
-              {!validation?.ok && !message.includes("Scanning") && (
-                <button
-                  className="mt-3 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-                  onClick={startCamera}
-                >🔄 Start Camera</button>
-              )}
             </div>
+          )}
+          <canvas ref={canvasRef} style={{ display: "none" }} />
+        </div>
+
+        {/* Message */}
+        <div style={{ fontSize: 14, color: "#374151", marginBottom: 8 }}>{message}</div>
+
+        {/* Debug info */}
+        {showDebug && (
+          <div style={{ fontSize: 11, marginBottom: 8, padding: 8, background: "#f9fafb", borderRadius: 4 }}>
+            <div>Ticket: {ticketId || "—"}</div>
+            <div>Raw: {rawPayload ? rawPayload.substring(0, 50) + "..." : "—"}</div>
+            <div>Locked: {lockedRef.current ? "Yes" : "No"}</div>
+            <div>Modal: {modalOpen ? "Open" : "Closed"}</div>
+            <div>Camera: {cameraStartedRef.current ? "Started" : "Not started"}</div>
           </div>
         )}
-        <canvas ref={canvasRef} style={{ display: "none" }} />
+
+        {/* Validation result */}
+        {renderValidation()}
       </div>
 
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-sm text-gray-700">{message}</div>
-        <div className="text-xs text-gray-500">Mode: {isStickerMode ? "Sticker" : "Badge"}</div>
-      </div>
-
-      {showDebug && (
-        <>
-          <div className="mb-3">
-            <div className="text-xs text-gray-500">Raw payload:</div>
-            <pre className="bg-gray-50 p-2 rounded text-xs max-h-28 overflow-auto">{rawPayload || "—"}</pre>
-          </div>
-          <div className="mb-3">
-            <div className="text-xs text-gray-500">Extracted ticket id:</div>
-            <div className="font-mono text-sm p-2 bg-gray-50 rounded">{ticketId || "—"}</div>
-          </div>
-          <div className="mb-3">
-            <div className="text-xs text-gray-500">Video visible:</div>
-            <div className="font-mono text-sm p-2 bg-gray-50 rounded">{showVideo ? "📹 Visible" : "🚫 Hidden"}</div>
-          </div>
-          <div className="mb-3">
-            <div className="text-xs text-gray-500">Lock status:</div>
-            <div className="font-mono text-sm p-2 bg-gray-50 rounded">{isLockedRef.current ? "LOCKED 🔒" : "UNLOCKED 🔓"}</div>
-          </div>
-        </>
+      {/* Portal Modal */}
+      {modalOpen && (
+        <BadgeModal
+          ticketId={ticketIdRef.current}
+          validation={validationRef.current}
+          printUrl={printUrl}
+          onClose={handleCloseModal}
+          onScanAgain={handleScanAgain}
+        />
       )}
-
-      {validation && renderValidation()}
-    </div>
+    </>
   );
-});
-
-export default TicketScanner;
+}
