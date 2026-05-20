@@ -11,11 +11,11 @@ import { useNavigate } from "react-router-dom";
 
 const ENV_ADMIN_EMAIL =
   (process.env.REACT_APP_ADMIN_EMAIL) ||
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_ADMIN_EMAIL) || "support@railtransexpo.com";
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_ADMIN_EMAIL) || "";
 
 const ENV_ADMIN_PASSWORD =
   (process.env.REACT_APP_ADMIN_PASSWORD) ||
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_ADMIN_PASSWORD) || "changeme";
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_ADMIN_PASSWORD) || "";
 
 function ShieldIcon(props) {
   return (
@@ -36,6 +36,13 @@ export default function AdminLogin({ open = false, onClose = () => {}, onSuccess
     const enteredEmail = (email || "").trim().toLowerCase();
     const requiredEmail = (ENV_ADMIN_EMAIL || "").trim().toLowerCase();
     const requiredPassword = ENV_ADMIN_PASSWORD;
+
+    // ✅ Check if credentials are configured
+    if (!requiredEmail || !requiredPassword) {
+      setError("Admin login is not configured. Please set environment variables.");
+      console.error("Admin credentials not configured. Set REACT_APP_ADMIN_EMAIL and REACT_APP_ADMIN_PASSWORD");
+      return;
+    }
 
     if (!enteredEmail || !password) {
       setError("Please enter both email and password.");
