@@ -8,7 +8,7 @@ import React, { useEffect, useState } from "react";
   - Use this as a drop-in replacement for your AdminRoute while you don't have a full AuthProvider.
 */
 
-const ADMIN_EMAIL = "***REMOVED***";
+const ADMIN_EMAIL = "support@railtransexpo.com";
 
 function readUserFromStorage() {
   try {
@@ -106,7 +106,7 @@ export default function AdminRoute({ children }) {
         </pre>
         <p>If you expected to be admin, check:</p>
         <ul>
-          <li>You're logged in with ***REMOVED*** exactly (case-insensitive).</li>
+          <li>You're logged in with support@railtransexpo.com exactly (case-insensitive).</li>
           <li>The auth provider returned your email and it's stored in the "user" localStorage key.</li>
           <li>If your auth uses cookies, ensure they're not blocked or SameSite prevents sending them on mobile.</li>
         </ul>

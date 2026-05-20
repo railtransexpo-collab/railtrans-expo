@@ -9,7 +9,7 @@ export default function ThankYouMessage({ email }) {
         Please check your email{email ? ` (${email})` : ""} for acknowledgement.
       </div>
       <div className="mt-3 text-[#21809b] text-base">
-        For any queries, contact ***REMOVED***.
+        For any queries, contact support@railtransexpo.com.
       </div>
     </div>
   );
