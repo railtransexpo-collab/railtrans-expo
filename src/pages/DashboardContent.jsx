@@ -26,21 +26,18 @@ function normalizeData(d) {
   return [];
 }
 
-// sanitizeRow: preserve booleans/numbers and expose id/_id strings when present
 function sanitizeRow(row) {
   if (!row || typeof row !== "object") return {};
   const out = {};
 
   if (row._id !== undefined && row._id !== null) {
     try {
-      out._id = typeof row._id === "string" ? row._id : (row._id.$oid ? String(row._id.$oid) : String(row._id));
+      out.id = typeof row._id === "string" ? row._id : (row._id.$oid ? String(row._id.$oid) : String(row._id));
     } catch {
-      out._id = String(row._id);
+      out.id = String(row._id);
     }
-    out.id = out._id;
   } else if (row.id !== undefined && row.id !== null) {
     out.id = String(row.id);
-    out._id = out.id;
   }
 
   for (const k of Object.keys(row)) {
@@ -50,24 +47,38 @@ function sanitizeRow(row) {
       out[k] = "";
       continue;
     }
-    if (typeof v === "boolean" || typeof v === "number") {
+    // Handle added_by_admin
+    if (k === 'added_by_admin') {
+      out[k] = v === true || v === 'true' || v === 1 ? 'Admin' : 'User';
+      continue;
+    }
+    if (typeof v === "boolean") {
+      out[k] = v ? "Yes" : "No";
+      continue;
+    }
+    if (typeof v === "number") {
       out[k] = v;
       continue;
     }
-    if (typeof v === "object") {
-      if (v.name || v.full_name || v.email || v.company) {
-        const parts = [];
-        if (v.name) parts.push(String(v.name));
-        if (v.full_name && !v.name) parts.push(String(v.full_name));
-        if (v.company) parts.push(String(v.company));
-        if (v.email) parts.push(String(v.email));
-        out[k] = parts.join(" • ");
-      } else {
-        try {
-          out[k] = JSON.stringify(v);
-        } catch {
-          out[k] = String(v);
+    // Format dates
+    if (v instanceof Date) {
+      out[k] = v.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      continue;
+    }
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)) {
+      try {
+        const d = new Date(v);
+        if (!isNaN(d.getTime())) {
+          out[k] = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+          continue;
         }
+      } catch {}
+    }
+    if (typeof v === "object") {
+      try {
+        out[k] = JSON.stringify(v);
+      } catch {
+        out[k] = String(v);
       }
       continue;
     }
@@ -75,7 +86,6 @@ function sanitizeRow(row) {
   }
   return out;
 }
-
 const LABEL_MAP = {
   name: "Name",
   full_name: "Name",
@@ -104,7 +114,7 @@ function prettifyKey(k) {
     .join(" ");
 }
 
-const HIDE_ON_CREATE_RE = /(ticket|tx|transaction|payment|paid|(^id$)|id$|created(_at)?|updated(_at)?|timestamp|_at)$/i;
+const HIDE_ON_CREATE_RE = /(ticket|tx|transaction|payment|paid|(^id$)|timestamp)$/i;
 function shouldHideOnCreate(name = "") {
   if (!name) return false;
   return HIDE_ON_CREATE_RE.test(String(name));
