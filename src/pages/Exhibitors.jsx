@@ -492,27 +492,21 @@ export default function Exhibitors() {
     await saveStep("registration_attempt", { form: formData }).catch(() => {});
     await finalizeSave();
   }
-  async function finalizeSave() {
+async function finalizeSave() {
     setError("");
     const companyCandidates = [
-      "companyName",
-      "company",
-      "company_name",
-      "company name",
-      "organization",
-      "organizationName",
-      "organization_name",
-      "companyTitle",
-      "companytitle",
+      "companyName", "company", "company_name", "company name",
+      "organization", "organizationName", "organization_name",
+      "companyTitle", "companytitle"
     ];
     let companyValue = findFieldValue(form || {}, companyCandidates);
     if (!companyValue && form && typeof form._rawForm === "object")
       companyValue = findFieldValue(form._rawForm, companyCandidates);
     companyValue = companyValue || "";
-
-    const verificationToken =
-      form?.verificationToken || form?.verification_token || null;
-
+  
+    const verificationToken = form?.verificationToken || form?.verification_token || null;
+  
+    // ✅ BUILD PAYLOAD DYNAMICALLY - include ALL form fields
     const payload = {
       name: form.name || form.fullName || "",
       email: form.email || "",
@@ -520,45 +514,49 @@ export default function Exhibitors() {
       designation: form.designation || "",
       company: companyValue,
       companyName: companyValue,
-      // ✅ ADD THESE FIELDS:
-      stall_size: form.stall_size || form.stallSize || "",
-      stall_type:
-        form.stall_type ||
-        form.stallType ||
-        form.space_type ||
-        form.spaceType ||
-        "",
-      type_of_space: form.type_of_space || form.typeOfSpace || "",
-      product_category: form.product_category || form.productCategory || "",
-      product_details: form.product_details || form.productDetails || "",
-      space_size: form.space_size || form.spaceSize || "",
-      boothType: form.boothType || form.booth_type || "",
-      spaceType: form.spaceType || form.space_type || "",
-      // ✅ END ADDITIONS
-      other_details: form.other_details || form.otherDetails || "",
-      purpose: form.purpose || "",
-      slots: Array.isArray(form.slots) ? form.slots : [],
       termsAccepted: !!form.termsAccepted,
-      _rawForm: form,
+      verificationToken: verificationToken,
     };
 
+    // ✅ ADD ALL DYNAMIC FIELDS from form
+    if (form && typeof form === 'object') {
+      const skipKeys = new Set([
+        'name', 'fullName', 'email', 'mobile', 'phone', 
+        'designation', 'company', 'companyName', 'verificationToken',
+        'verification_token', 'termsAccepted', '_rawForm',
+        'slots', 'purpose', 'other_details', 'otherDetails'
+      ]);
+      
+      for (const [key, value] of Object.entries(form)) {
+        if (!skipKeys.has(key) && value !== undefined && value !== null && value !== '') {
+          payload[key] = value;
+        }
+      }
+    }
+
+    // ✅ Also include _rawForm fields
+    if (form?._rawForm && typeof form._rawForm === 'object') {
+      const rawSkipKeys = new Set(['name', 'email', 'mobile', 'phone', 'company']);
+      for (const [key, value] of Object.entries(form._rawForm)) {
+        if (!rawSkipKeys.has(key) && value !== undefined && value !== null && value !== '') {
+          if (!(key in payload)) {
+            payload[key] = value;
+          }
+        }
+      }
+    }
+  
     try {
       const json = await saveExhibitorApi({
         ...payload,
-        verificationToken: verificationToken, // Token at root level
+        verificationToken: verificationToken
       });
-
+      
       if (json?.insertedId) {
-        scheduleReminder(json.insertedId, config?.eventDetails?.date).catch(
-          () => {},
-        );
+        scheduleReminder(json.insertedId, config?.eventDetails?.date).catch(() => {});
       }
-
-      await saveStep(
-        "registration",
-        { form },
-        { insertedId: json?.insertedId || null },
-      ).catch(() => {});
+  
+      await saveStep("registration", { form }, { insertedId: json?.insertedId || null }).catch(() => {});
       setStep(4);
     } catch (err) {
       console.error("[Exhibitors] finalize save error:", err);
