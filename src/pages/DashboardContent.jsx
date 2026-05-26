@@ -719,7 +719,7 @@ export default function DashboardContent() {
   return (
     <div className="pt-4 pb-6 w-full">
       <div className="w-full mx-auto px-4 md:px-6">
-        <div className="sticky top-16 z-20 bg-transparent pb-4">
+        <div className=" top-16 z-20 bg-transparent pb-4">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold">Admin Dashboard</h1>

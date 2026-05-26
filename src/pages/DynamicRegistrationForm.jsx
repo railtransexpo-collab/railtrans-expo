@@ -348,25 +348,27 @@ export default function DynamicRegistrationForm({
     );
   };
 
-  // Split fields into rows (2 columns for better layout)
-  const renderFieldsInGrid = () => {
-    // Group fields that can be side by side
-    const textFields = safeFields.filter(f => f.type !== "textarea" && f.type !== "checkbox" && f.type !== "radio");
-    const otherFields = safeFields.filter(f => f.type === "textarea" || f.type === "checkbox" || f.type === "radio");
-    
-    return (
-      <>
-        {/* Two-column layout for text/email/phone/select fields */}
-        {textFields.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {textFields.map(field => renderField(field))}
+const renderFieldsInGrid = () => {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {safeFields.map((field) => {
+        const isFullWidth =
+          field.type === "textarea" ||
+          field.type === "checkbox" ||
+          field.type === "radio";
+
+        return (
+          <div
+            key={field.name}
+            className={isFullWidth ? "md:col-span-2" : ""}
+          >
+            {renderField(field)}
           </div>
-        )}
-        {/* Full-width for textarea, checkbox, radio */}
-        {otherFields.map(field => renderField(field))}
-      </>
-    );
-  };
+        );
+      })}
+    </div>
+  );
+};
 
   // --- Form UI with reduced padding and better layout ---
   return (
