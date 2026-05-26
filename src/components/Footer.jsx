@@ -51,12 +51,19 @@ export default function Footer({ primaryColor = "#196e87" }) {
 
   return (
     <footer
-      className="w-full py-6 px-4 md:px-6 mt-auto"
-      style={{ backgroundColor: footerBg, color: footerText }}
+      className="w-full py-6 px-4 md:px-6 mt-auto relative z-50"
+      style={{
+        backgroundColor: footerBg,
+        color: footerText,
+        pointerEvents: "auto",
+      }}
     >
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
         {/* Links */}
-        <div className="flex flex-wrap justify-center gap-4 md:gap-6 text-sm">
+        <div
+          className="flex flex-wrap justify-center gap-4 md:gap-6 text-sm relative z-50"
+          style={{ pointerEvents: "auto" }}
+        >
           {links.map((link) => (
             <a
               key={link.label}
