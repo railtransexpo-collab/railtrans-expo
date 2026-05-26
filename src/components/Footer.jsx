@@ -58,18 +58,18 @@ export default function Footer({ primaryColor = "#196e87" }) {
         {/* Links */}
         <div className="flex flex-wrap justify-center gap-4 md:gap-6 text-sm">
           {links.map((link) => (
-            <span
+            <a
               key={link.label}
-              onClick={() =>
-                window.open(link.url, "_blank", "noopener,noreferrer")
-              }
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
               className="cursor-pointer hover:underline transition-colors duration-200"
               style={{ color: footerText }}
               onMouseEnter={(e) => (e.target.style.color = linkHover)}
               onMouseLeave={(e) => (e.target.style.color = footerText)}
             >
               {link.label}
-            </span>
+            </a>
           ))}
         </div>
 
