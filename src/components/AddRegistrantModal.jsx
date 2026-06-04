@@ -19,7 +19,13 @@ export default function AddRegistrantModal({
   defaultRole = "visitor",
   apiBase = "",
 }) {
-  const ROLE_OPTIONS = ["visitor", "exhibitor", "partner", "speaker", "awardee"];
+  const ROLE_OPTIONS = [
+    "visitor",
+    "exhibitor",
+    "partner",
+    "speaker",
+    "awardee",
+  ];
   const navigate = useNavigate();
 
   const [step, setStep] = useState("selectRole"); // selectRole | selectCategory | form | done
@@ -43,7 +49,11 @@ export default function AddRegistrantModal({
   const checkTimerRef = useRef(null);
 
   function apiUrl(path) {
-    const base = (apiBase || (typeof window !== "undefined" && window.__API_BASE__) || "").replace(/\/$/, "");
+    const base = (
+      apiBase ||
+      (typeof window !== "undefined" && window.__API_BASE__) ||
+      ""
+    ).replace(/\/$/, "");
     return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
   }
 
@@ -75,7 +85,11 @@ export default function AddRegistrantModal({
     if (!Array.isArray(cols)) return [];
     return cols.map((c) => {
       const name = c.name || c.key || c.field || c.id;
-      const type = (c.type || (c.options ? "select" : "text") || "text").toLowerCase();
+      const type = (
+        c.type ||
+        (c.options ? "select" : "text") ||
+        "text"
+      ).toLowerCase();
       const options = c.options || c.choices || c.values || c.items || [];
       return {
         name,
@@ -103,7 +117,9 @@ export default function AddRegistrantModal({
   }
 
   function normalizeEmail(e = "") {
-    return String(e || "").trim().toLowerCase();
+    return String(e || "")
+      .trim()
+      .toLowerCase();
   }
 
   /* ---------------- config load ---------------- */
@@ -112,7 +128,9 @@ export default function AddRegistrantModal({
     setLoading(true);
     setMsg("");
     try {
-      const res = await fetch(apiUrl(`/api/registration-configs/${selectedRole}`));
+      const res = await fetch(
+        apiUrl(`/api/registration-configs/${selectedRole}`),
+      );
       const js = await res.json().catch(() => null);
       const cols = js?.config?.fields || js?.fields || [];
       const normalized = normalizeConfigFields(cols);
@@ -121,9 +139,27 @@ export default function AddRegistrantModal({
       if (normalized.length === 0) {
         if (selectedRole === "visitor") {
           normalized.push(
-            { name: "name", label: "Name", type: "text", required: true, options: [] },
-            { name: "email", label: "Email", type: "text", required: true, options: [] },
-            { name: "mobile", label: "Mobile", type: "text", required: false, options: [] }
+            {
+              name: "name",
+              label: "Name",
+              type: "text",
+              required: true,
+              options: [],
+            },
+            {
+              name: "email",
+              label: "Email",
+              type: "text",
+              required: true,
+              options: [],
+            },
+            {
+              name: "mobile",
+              label: "Mobile",
+              type: "text",
+              required: false,
+              options: [],
+            },
           );
         }
       }
@@ -177,8 +213,12 @@ export default function AddRegistrantModal({
         setCheckingEmail(true);
         setExisting(null);
         setMsg("");
-        const url = apiUrl(`/api/otp/check-email?email=${encodeURIComponent(email)}&type=${encodeURIComponent(role)}`);
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const url = apiUrl(
+          `/api/otp/check-email?email=${encodeURIComponent(email)}&type=${encodeURIComponent(role)}`,
+        );
+        const res = await fetch(url, {
+          headers: { Accept: "application/json" },
+        });
         const data = await res.json().catch(() => null);
         if (res.ok && data && data.success && data.found) {
           const info = data.info || null;
@@ -186,9 +226,13 @@ export default function AddRegistrantModal({
           const conflict = info && String(info.collection) === ourCollection;
           setExisting(info || null);
           if (conflict) {
-            setMsg("This email already exists in the same registration table. Use Upgrade Ticket instead of creating a duplicate record.");
+            setMsg(
+              "This email already exists in the same registration table. Use Upgrade Ticket instead of creating a duplicate record.",
+            );
           } else if (info) {
-            setMsg(`Email found in another collection (${info.collection}). You may still create a separate record here.`);
+            setMsg(
+              `Email found in another collection (${info.collection}). You may still create a separate record here.`,
+            );
           } else {
             setMsg("");
           }
@@ -208,7 +252,6 @@ export default function AddRegistrantModal({
     return () => {
       if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
     };
-    
   }, [values.email, values.emailAddress, role, step]);
 
   /* ---------------- NEW: Send ticket email based on category ---------------- */
@@ -217,7 +260,9 @@ export default function AddRegistrantModal({
       const emailType = isPaidTicket ? "delegate_ticket" : "visitor_ticket";
       const emailPayload = {
         to: registrantData.email,
-        subject: isPaidTicket ? "Your Delegate Ticket - RailTrans Expo" : "Your Visitor Registration - RailTrans Expo",
+        subject: isPaidTicket
+          ? "Your Delegate Ticket - RailTrans Expo"
+          : "Your Visitor Registration - RailTrans Expo",
         registrantData: {
           name: registrantData.name,
           email: registrantData.email,
@@ -240,7 +285,9 @@ export default function AddRegistrantModal({
 
       const result = await response.json();
       if (response.ok && result.success) {
-        console.log(`${emailType} email sent successfully to ${registrantData.email}`);
+        console.log(
+          `${emailType} email sent successfully to ${registrantData.email}`,
+        );
         return true;
       } else {
         console.error("Failed to send ticket email:", result.error);
@@ -264,15 +311,21 @@ export default function AddRegistrantModal({
       const email = normalizeEmail(emailRaw);
       if (email) {
         try {
-          const url = apiUrl(`/api/otp/check-email?email=${encodeURIComponent(email)}&type=${encodeURIComponent(role)}`);
-          const res = await fetch(url, { headers: { Accept: "application/json" } });
+          const url = apiUrl(
+            `/api/otp/check-email?email=${encodeURIComponent(email)}&type=${encodeURIComponent(role)}`,
+          );
+          const res = await fetch(url, {
+            headers: { Accept: "application/json" },
+          });
           const data = await res.json().catch(() => null);
           if (res.ok && data && data.success && data.found) {
             const info = data.info || null;
             const ourCollection = ensurePluralRole(role);
             if (info && String(info.collection) === ourCollection) {
               setExisting(info);
-              setMsg("Email already exists in this collection — create aborted. Use Upgrade Ticket.");
+              setMsg(
+                "Email already exists in this collection — create aborted. Use Upgrade Ticket.",
+              );
               setLoading(false);
               return;
             }
@@ -283,10 +336,12 @@ export default function AddRegistrantModal({
       }
 
       const collection = `${role}s`;
-      
+
       // Determine if this is a paid ticket (delegate) or free ticket (visitor)
-      const isPaidTicket = ticketMeta.total > 0 && !/free|general|0/i.test(String(ticketCategory || ""));
-      
+      const isPaidTicket =
+        ticketMeta.total > 0 &&
+        !/free|general|0/i.test(String(ticketCategory || ""));
+
       const payload = {
         ...values,
         ticket_category: ticketCategory || null,
@@ -317,7 +372,7 @@ export default function AddRegistrantModal({
 
       // Get the created registrant ID
       const registrantId = js.id || js.insertedId || js._id;
-      
+
       // Prepare registrant data for email
       const registrantData = {
         id: registrantId,
@@ -333,11 +388,17 @@ export default function AddRegistrantModal({
       // Send appropriate ticket email
       setSendingEmail(true);
       const emailSent = await sendTicketEmail(registrantData, isPaidTicket);
-      
+
       if (emailSent) {
-        setMsg(isPaidTicket ? "Registrant created and Delegate ticket sent!" : "Registrant created and Visitor ticket sent!");
+        setMsg(
+          isPaidTicket
+            ? "Registrant created and Delegate ticket sent!"
+            : "Registrant created and Visitor ticket sent!",
+        );
       } else {
-        setMsg("Registrant created but email sending failed. Please resend manually.");
+        setMsg(
+          "Registrant created but email sending failed. Please resend manually.",
+        );
       }
 
       onCreated && onCreated(js, collection);
@@ -354,23 +415,41 @@ export default function AddRegistrantModal({
       setSendingEmail(false);
     }
   }
+  // Add this helper function near the top with other helpers
+  function formatCurrency(amount) {
+    const num = Number(amount) || 0;
+    return `₹${num.toLocaleString("en-IN")}`;
+  }
 
   function handleUpgradeNavigate() {
     if (!existing) return;
-    const collection = existing.collection || ensurePluralRole(existing.role || role);
-    const id = existing.id || existing._id || (existing._id && existing._id.$oid) || null;
+    const collection =
+      existing.collection || ensurePluralRole(existing.role || role);
+    const id =
+      existing.id ||
+      existing._id ||
+      (existing._id && existing._id.$oid) ||
+      null;
     const ticket = existing.ticket_code || existing.ticketCode || null;
-    const emailParam = encodeURIComponent(normalizeEmail(values.email || values.emailAddress || ""));
+    const emailParam = encodeURIComponent(
+      normalizeEmail(values.email || values.emailAddress || ""),
+    );
 
     if (id) {
-      navigate(`/ticket-upgrade?entity=${encodeURIComponent(collection)}&id=${encodeURIComponent(String(id))}&email=${emailParam}`);
+      navigate(
+        `/ticket-upgrade?entity=${encodeURIComponent(collection)}&id=${encodeURIComponent(String(id))}&email=${emailParam}`,
+      );
       return;
     }
     if (ticket) {
-      navigate(`/ticket-upgrade?entity=${encodeURIComponent(collection)}&ticket_code=${encodeURIComponent(String(ticket))}&email=${emailParam}`);
+      navigate(
+        `/ticket-upgrade?entity=${encodeURIComponent(collection)}&ticket_code=${encodeURIComponent(String(ticket))}&email=${emailParam}`,
+      );
       return;
     }
-    navigate(`/ticket-upgrade?entity=${encodeURIComponent(collection)}&email=${emailParam}`);
+    navigate(
+      `/ticket-upgrade?entity=${encodeURIComponent(collection)}&email=${emailParam}`,
+    );
   }
 
   // Handle ticket selection with meta data
@@ -383,7 +462,9 @@ export default function AddRegistrantModal({
 
   if (!open) return null;
 
-  const createDisabled = checkingEmail || (existing && String(existing.collection) === ensurePluralRole(role));
+  const createDisabled =
+    checkingEmail ||
+    (existing && String(existing.collection) === ensurePluralRole(role));
 
   return (
     <div className="fixed inset-0 z-50 flex justify-center items-start p-6">
@@ -395,7 +476,9 @@ export default function AddRegistrantModal({
         <div className="p-4 border-b">
           <h3 className="text-lg font-semibold">Add Registrant (Admin)</h3>
           <p className="text-sm text-gray-500 mt-1">
-            {ticketMeta.total > 0 ? "Will send DELEGATE ticket" : "Will send VISITOR ticket"}
+            {ticketMeta.total > 0
+              ? "Will send DELEGATE ticket"
+              : "Will send VISITOR ticket"}
           </p>
         </div>
 
@@ -422,7 +505,9 @@ export default function AddRegistrantModal({
                 <button
                   className="px-4 py-2 bg-blue-600 text-white rounded"
                   onClick={() =>
-                    role === "visitor" ? setStep("selectCategory") : loadConfig(role)
+                    role === "visitor"
+                      ? setStep("selectCategory")
+                      : loadConfig(role)
                   }
                 >
                   Continue
@@ -432,48 +517,93 @@ export default function AddRegistrantModal({
           )}
 
           {step === "selectCategory" && (
-            <>
+            <div className="space-y-5">
+              {/* Ticket Category Selector */}
               <TicketCategorySelector
                 role={role}
                 value={ticketCategory}
                 onChange={handleTicketSelect}
               />
-              {ticketMeta.total > 0 && (
-                <div className="mt-3 p-3 bg-blue-50 rounded border border-blue-200">
-                  <p className="text-sm text-blue-800">
-                    <strong>Note:</strong> This is a paid ticket. The registrant will receive a <strong>DELEGATE ticket</strong> email.
-                  </p>
-                  <p className="text-sm text-blue-600 mt-1">
-                    Amount: ₹{ticketMeta.total}
-                  </p>
-                </div>
-              )}
-              {ticketMeta.total === 0 && ticketCategory && (
-                <div className="mt-3 p-3 bg-green-50 rounded border border-green-200">
-                  <p className="text-sm text-green-800">
-                    <strong>Note:</strong> This is a free ticket. The registrant will receive a <strong>VISITOR ticket</strong> email.
-                  </p>
-                </div>
-              )}
-              <div className="mt-4 flex gap-2">
-                <button
-                  className="px-4 py-2 bg-blue-600 text-white rounded"
-                  onClick={() => loadConfig(role)}
+
+              {/* Info Messages */}
+              {ticketCategory && (
+                <div
+                  className={`p-4 rounded-lg border ${
+                    ticketMeta.total > 0
+                      ? "bg-blue-50 border-blue-200"
+                      : "bg-green-50 border-green-200"
+                  }`}
                 >
-                  Continue
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0">
+                      {ticketMeta.total > 0 ? (
+                        <svg
+                          className="w-5 h-5 text-blue-600"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      ) : (
+                        <svg
+                          className="w-5 h-5 text-green-600"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">
+                        {ticketMeta.total > 0
+                          ? "DELEGATE Ticket (Paid)"
+                          : "VISITOR Ticket (Free)"}
+                      </p>
+                      <p className="text-sm mt-1">
+                        {ticketMeta.total > 0
+                          ? `Amount: ${formatCurrency(ticketMeta.total)} - The registrant will receive a DELEGATE ticket email.`
+                          : "The registrant will receive a VISITOR ticket email."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => loadConfig(role)}
+                  disabled={!ticketCategory}
+                >
+                  Continue to Form →
                 </button>
                 <button
-                  className="px-4 py-2 border rounded"
+                  className="px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors"
                   onClick={() => {
                     setStep("selectRole");
                     setTicketCategory("");
-                    setTicketMeta({ price: 0, gstAmount: 0, total: 0, label: "" });
+                    setTicketMeta({
+                      price: 0,
+                      gstAmount: 0,
+                      total: 0,
+                      label: "",
+                    });
                   }}
                 >
                   Back
                 </button>
               </div>
-            </>
+            </div>
           )}
 
           {step === "form" && (
@@ -484,7 +614,14 @@ export default function AddRegistrantModal({
                 const key = f.name;
 
                 const options = Array.isArray(f.options)
-                  ? f.options.map((o) => (typeof o === "object" ? { value: (o.value ?? o), label: (o.label ?? (o.value ?? String(o))) } : { value: o, label: String(o) }))
+                  ? f.options.map((o) =>
+                      typeof o === "object"
+                        ? {
+                            value: o.value ?? o,
+                            label: o.label ?? o.value ?? String(o),
+                          }
+                        : { value: o, label: String(o) },
+                    )
                   : [];
 
                 if (f.type === "select") {
@@ -496,7 +633,9 @@ export default function AddRegistrantModal({
                       <select
                         className="w-full border px-3 py-2"
                         value={val ?? ""}
-                        onChange={(e) => updateValue(key, e.target.value, "text")}
+                        onChange={(e) =>
+                          updateValue(key, e.target.value, "text")
+                        }
                         required={required}
                       >
                         <option value="">{required ? "Select" : "None"}</option>
@@ -524,7 +663,9 @@ export default function AddRegistrantModal({
                               name={key}
                               value={o.value}
                               checked={String(val) === String(o.value)}
-                              onChange={(e) => updateValue(key, e.target.value, "text")}
+                              onChange={(e) =>
+                                updateValue(key, e.target.value, "text")
+                              }
                               required={required}
                             />
                             <span>{o.label}</span>
@@ -541,7 +682,9 @@ export default function AddRegistrantModal({
                       <input
                         type="checkbox"
                         checked={!!val}
-                        onChange={(e) => updateValue(key, e.target.checked, "checkbox")}
+                        onChange={(e) =>
+                          updateValue(key, e.target.checked, "checkbox")
+                        }
                       />
                       <span>
                         {f.label} {required && "*"}
@@ -559,14 +702,18 @@ export default function AddRegistrantModal({
                       <textarea
                         className="w-full border px-3 py-2"
                         value={val ?? ""}
-                        onChange={(e) => updateValue(key, e.target.value, "text")}
+                        onChange={(e) =>
+                          updateValue(key, e.target.value, "text")
+                        }
                         required={required}
                       />
                     </div>
                   );
                 }
 
-                const inputType = ["number", "email", "tel"].includes(f.type) ? f.type : "text";
+                const inputType = ["number", "email", "tel"].includes(f.type)
+                  ? f.type
+                  : "text";
                 return (
                   <div key={key}>
                     <label className="block mb-1">
@@ -577,7 +724,10 @@ export default function AddRegistrantModal({
                       value={val ?? ""}
                       onChange={(e) => {
                         updateValue(key, e.target.value, f.type);
-                        if (key === "email" || key.toLowerCase().includes("email")) {
+                        if (
+                          key === "email" ||
+                          key.toLowerCase().includes("email")
+                        ) {
                           setExisting(null);
                           setMsg("");
                         }
@@ -586,9 +736,14 @@ export default function AddRegistrantModal({
                       type={inputType}
                     />
 
-                    {(key === "email" || key.toLowerCase().includes("email")) && (
+                    {(key === "email" ||
+                      key.toLowerCase().includes("email")) && (
                       <>
-                        {checkingEmail && <div className="text-xs text-gray-600 mt-1">Checking email...</div>}
+                        {checkingEmail && (
+                          <div className="text-xs text-gray-600 mt-1">
+                            Checking email...
+                          </div>
+                        )}
                         {existing && msg && (
                           <div className="text-xs mt-1 p-2 bg-yellow-50 border border-yellow-100 rounded text-[#b45309]">
                             <div>{msg}</div>
@@ -612,11 +767,15 @@ export default function AddRegistrantModal({
               {/* Display ticket type info in form */}
               <div className="mt-2 p-3 bg-gray-50 rounded border">
                 <p className="text-sm">
-                  <strong>Ticket Type:</strong>{' '}
+                  <strong>Ticket Type:</strong>{" "}
                   {ticketMeta.total > 0 ? (
-                    <span className="text-blue-600 font-semibold">DELEGATE (Paid - ₹{ticketMeta.total})</span>
+                    <span className="text-blue-600 font-semibold">
+                      DELEGATE (Paid - ₹{ticketMeta.total})
+                    </span>
                   ) : (
-                    <span className="text-green-600 font-semibold">VISITOR (Free)</span>
+                    <span className="text-green-600 font-semibold">
+                      VISITOR (Free)
+                    </span>
                   )}
                 </p>
               </div>
@@ -625,9 +784,13 @@ export default function AddRegistrantModal({
                 <button
                   type="submit"
                   disabled={loading || createDisabled || sendingEmail}
-                  className={`px-4 py-2 bg-green-600 text-white rounded ${(createDisabled || sendingEmail) ? "opacity-60 cursor-not-allowed" : ""}`}
+                  className={`px-4 py-2 bg-green-600 text-white rounded ${createDisabled || sendingEmail ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
-                  {loading ? "Creating..." : sendingEmail ? "Sending Email..." : "Create & Send Ticket"}
+                  {loading
+                    ? "Creating..."
+                    : sendingEmail
+                      ? "Sending Email..."
+                      : "Create & Send Ticket"}
                 </button>
                 <button
                   type="button"
@@ -635,7 +798,12 @@ export default function AddRegistrantModal({
                   onClick={() => {
                     setStep("selectRole");
                     setTicketCategory("");
-                    setTicketMeta({ price: 0, gstAmount: 0, total: 0, label: "" });
+                    setTicketMeta({
+                      price: 0,
+                      gstAmount: 0,
+                      total: 0,
+                      label: "",
+                    });
                   }}
                 >
                   Cancel

@@ -3,8 +3,8 @@ import React, { useEffect, useState } from "react";
 const DEFAULT_CATEGORIES_BY_ROLE = {
   visitors: [
     { value: "free", label: "Free", price: 0, gst: 0, features: ["Entry to Expo", "Access to General Sessions"], button: "Get Free Ticket" },
-    { value: "premium", label: "Premium", price: 5085, gst: 0.18, features: ["Priority Access", "Premium Lounge", "E-Ticket with QR"], button: "Get Premium Ticket" },
-    { value: "combo", label: "Combo", price: 5, gst: 0.18, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" },
+    { value: "premium", label: "Premium", price: 5085, gst: 915, features: ["Priority Access", "Premium Lounge", "E-Ticket with QR"], button: "Get Premium Ticket" },
+    { value: "combo", label: "Combo", price: 5, gst: 1, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" },
   ]
 };
 
@@ -61,24 +61,12 @@ function findCategoryByValue(value, categories) {
   return (categories || []).find(c => String(c.value).toLowerCase() === v) || null;
 }
 
-function fallbackCategoryMeta(value, role) {
-  if (!value) return { price: 0, gst: 0, label: value || "" };
-  const v = String(value).toLowerCase();
-  if (v.includes("premium_delegate")) return { price: 5085, gst: 0.18, label: "Premium Delegate" };
-  if (v.includes("combo")) return { price: 5000, gst: 0.18, label: "Combo" };
-  if (v.includes("premium")) {
-    if (role === "partners") return { price: 15000, gst: 0.18, label: "Premium" };
-    if (role === "exhibitors") return { price: 5000, gst: 0.18, label: "Premium" };
-    return { price: 2500, gst: 0.18, label: "Premium" };
-  }
-  if (v.includes("free") || v.includes("general") || v === "0") return { price: 0, gst: 0, label: "Free" };
-  if (v.includes("vip")) return { price: 7500, gst: 0.18, label: "VIP" };
-  return { price: 2500, gst: 0.18, label: String(value) };
-}
-
 export default function TicketCategorySelector({ role = "visitors", value, onChange = () => {}, categories: categoriesProp }) {
   const [opts, setOpts] = useState(() => resolveCategories(role, categoriesProp));
-  useEffect(() => { setOpts(resolveCategories(role, categoriesProp)); }, [role, categoriesProp]);
+  
+  useEffect(() => { 
+    setOpts(resolveCategories(role, categoriesProp)); 
+  }, [role, categoriesProp]);
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -93,84 +81,124 @@ export default function TicketCategorySelector({ role = "visitors", value, onCha
   const handleSelect = (opt) => {
     const allOpts = resolveCategories(role, categoriesProp);
     const matched = findCategoryByValue(opt.value, allOpts) || null;
-    let price, gstRate, gstAmount, total, label;
+    let price, gstAmount, total, label;
+    
     if (matched) {
       price = safeNumber(matched.price);
-      gstRate = safeNumber(matched.gst);
-      gstAmount = Math.round(price * gstRate);
+      gstAmount = safeNumber(matched.gst);
       total = price + gstAmount;
       label = matched.label || opt.label || String(opt.value);
     } else {
-      const fb = fallbackCategoryMeta(opt.value, role);
-      price = safeNumber(fb.price);
-      gstRate = safeNumber(fb.gst);
-      gstAmount = Math.round(price * gstRate);
+      price = safeNumber(opt.price);
+      gstAmount = safeNumber(opt.gst);
       total = price + gstAmount;
-      label = fb.label || opt.label || String(opt.value);
+      label = opt.label || String(opt.value);
     }
-    onChange(opt.value, { price, gstRate, gstAmount, total, label });
+    
+    onChange(opt.value, { price, gstAmount, total, label });
   };
 
   return (
-    <div className="bg-white py-6 px-4">
-      <div className="max-w-7xl mx-auto">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {opts.map(opt => {
-            const price = Number(opt.price || 0);
-            const gstRate = Number(opt.gst || 0);
-            const gstAmount = Math.round(price * gstRate);
-            const total = price + gstAmount;
-            const selected = String(value) === String(opt.value);
-            return (
-              <div
-                key={opt.value}
-                className={`rounded-lg border p-4 flex flex-col justify-between transition-transform ${selected ? "ring-2 ring-[#196e87] scale-105" : "hover:shadow-md"}`}
-                aria-pressed={selected}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleSelect(opt); }}
-              >
-                <div>
-                  <div className="text-lg font-semibold mb-1">{opt.label}</div>
-                  <div className="text-2xl font-extrabold mb-2">
-                    {formatCurrency(price)}
-                    {gstRate ? <span className="text-sm font-normal ml-2">+ {formatCurrency(gstAmount)} GST</span> : <span className="text-sm font-normal ml-2">No GST</span>}
-                  </div>
-
-                  <div className="mb-3">
-                    <div className="hidden sm:block text-sm text-gray-700">
-                      <ul className="list-disc pl-5">
-                        {Array.isArray(opt.features) && opt.features.map((f, i) => <li key={i}>{f}</li>)}
-                      </ul>
-                    </div>
-                    <div className="block sm:hidden">
-                      <details className="text-sm text-gray-700">
-                        <summary className="cursor-pointer">View features</summary>
-                        <ul className="list-disc pl-5 mt-2">
-                          {Array.isArray(opt.features) && opt.features.map((f, i) => <li key={i}>{f}</li>)}
-                        </ul>
-                      </details>
-                    </div>
-                  </div>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {opts.map(opt => {
+          const price = Number(opt.price || 0);
+          const gstAmount = Number(opt.gst || 0);
+          const total = price + gstAmount;
+          const selected = String(value) === String(opt.value);
+          const isFree = price === 0;
+          
+          return (
+            <div
+              key={opt.value}
+              onClick={() => handleSelect(opt)}
+              className={`
+                relative cursor-pointer rounded-xl border-2 transition-all duration-200 overflow-hidden
+                ${selected 
+                  ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200 ring-offset-0' 
+                  : 'border-gray-200 hover:border-blue-300 hover:shadow-md bg-white'
+                }
+              `}
+            >
+              {/* Selection indicator */}
+              {selected && (
+                <div className="absolute top-3 right-3">
+                  <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
                 </div>
-
-                <div className="mt-4 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm text-gray-600">Total</div>
-                    <div className="text-lg font-bold">{formatCurrency(total)}</div>
-                  </div>
+              )}
+              
+              <div className="p-5">
+                {/* Ticket Label */}
+                <div className="mb-3">
+                  <h3 className={`text-xl font-bold ${selected ? 'text-blue-600' : 'text-gray-800'}`}>
+                    {opt.label}
+                  </h3>
+                </div>
+                
+                {/* Pricing */}
+                <div className="mb-4">
+                  {isFree ? (
+                    <div className="inline-block px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-semibold">
+                      FREE
+                    </div>
+                  ) : (
+                    <>
+                      <div className="text-3xl font-bold text-gray-900">
+                        {formatCurrency(price)}
+                      </div>
+                      {gstAmount > 0 && (
+                        <div className="text-sm text-gray-500 mt-1">
+                          + {formatCurrency(gstAmount)} GST
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+                
+                {/* Features List */}
+                <div className="mb-5">
+                  <ul className="space-y-2">
+                    {Array.isArray(opt.features) && opt.features.map((f, i) => (
+                      <li key={i} className="flex items-start text-sm text-gray-600">
+                        <svg className="w-4 h-4 text-green-500 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                        <span>{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                
+                {/* Total and Button */}
+                <div className="pt-3 border-t border-gray-100">
+                  {!isFree && (
+                    <div className="flex justify-between items-center mb-3">
+                      <span className="text-sm text-gray-500">Total Amount</span>
+                      <span className="text-lg font-bold text-gray-900">{formatCurrency(total)}</span>
+                    </div>
+                  )}
+                  
                   <button
-                    className={`ml-4 py-2 px-4 rounded-full font-bold ${selected ? "bg-[#196e87] text-white" : "bg-gray-100 text-[#196e87]"} w-full sm:w-auto`}
-                    onClick={() => handleSelect(opt)}
-                    aria-pressed={selected}
+                    className={`
+                      w-full py-2.5 px-4 rounded-lg font-medium transition-all duration-200
+                      ${selected 
+                        ? 'bg-blue-600 text-white cursor-default' 
+                        : isFree
+                          ? 'bg-green-600 hover:bg-green-700 text-white'
+                          : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
+                      }
+                    `}
+                    disabled={selected}
                   >
-                    {selected ? "Selected" : (opt.button || "Select")}
+                    {selected ? '✓ Selected' : (opt.button || 'Select')}
                   </button>
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
