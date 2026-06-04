@@ -216,6 +216,9 @@ export default function DashboardContent() {
 
   const [resendLoadingId, setResendLoadingId] = useState(null);
 
+  const [searchTerm, setSearchTerm] = useState("");
+  const [activeFilter, setActiveFilter] = useState("all");
+  
   const mountedRef = useRef(true);
   const apiMap = useRef(
     apiEndpoints.reduce((a, e) => {
@@ -302,6 +305,20 @@ export default function DashboardContent() {
   // ---------- Export to multi-sheet XLSX (clean, whitelist-driven) ----------
   // This uses SheetJS (xlsx). Install with: npm install xlsx
 
+  // ✅ ADD THIS FUNCTION
+function filterDataBySearch(data, searchTerm, tableKey) {
+  if (!searchTerm || !searchTerm.trim()) return data;
+  
+  const term = searchTerm.toLowerCase().trim();
+  
+  return data.filter(row => {
+    // Search in all fields of the row
+    return Object.values(row).some(value => {
+      if (value === null || value === undefined) return false;
+      return String(value).toLowerCase().includes(term);
+    });
+  });
+}
   function flattenForSheet(doc = {}, tableKey) {
     const allowed = CLEAN_EXPORT_FIELDS[tableKey] || [];
     const out = {};
@@ -734,29 +751,91 @@ export default function DashboardContent() {
           </div>
 
           <DashboardStats stats={stats} />
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-4">
-          {TABLE_KEYS.map((key) => (
-            <DashboardSection
-              key={key}
-              label={key.charAt(0).toUpperCase() + key.slice(1)}
-              data={report[key] || []}
-              tableKey={key}
-              configs={configs}
-              onEdit={handleEdit}
-              onResend={(row) => handleResend(key, row)}
-              resendLoadingId={resendLoadingId}
-              onAddNew={null}
-              onDelete={handleDelete}
-              onRefreshRow={handleRefreshRow}
-              setShowExhibitorManager={setShowExhibitorManager}
-              setShowPartnerManager={setShowPartnerManager}
-              PAGE_SIZE={PAGE_SIZE}
-              HIDDEN_FIELDS={HIDDEN_FIELDS}
-              prettifyKey={prettifyKey}
+              <div className="mt-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+          <div className="relative flex-1 max-w-md">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search by name, email, company, ticket code..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none"
             />
-          ))}
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          
+          {/* Category filter pills */}
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: "all", label: "All" },
+              { key: "visitors", label: "Visitors" },
+              { key: "exhibitors", label: "Exhibitors" },
+              { key: "partners", label: "Partners" },
+              { key: "speakers", label: "Speakers" },
+              { key: "awardees", label: "Awardees" },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setActiveFilter(key)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                  activeFilter === key
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+              >
+                {label}
+                {key !== "all" && ` (${(report[key] || []).length})`}
+              </button>
+            ))}
+          </div>
+          
+          {/* Search results count */}
+          {searchTerm && (
+            <span className="text-xs text-gray-500 whitespace-nowrap">
+              Found: {TABLE_KEYS.filter(k => activeFilter === "all" || activeFilter === k)
+                .reduce((sum, k) => sum + filterDataBySearch(report[k] || [], searchTerm).length, 0)} results
+            </span>
+          )}
+        </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-4">
+          {TABLE_KEYS.filter(key => activeFilter === "all" || activeFilter === key).map((key) => {
+            const filteredData = filterDataBySearch(report[key] || [], searchTerm);
+            
+            // Skip empty tables when searching
+            if (searchTerm && filteredData.length === 0 && activeFilter === "all") return null;
+            
+            return (
+              <DashboardSection
+                key={key}
+                label={key.charAt(0).toUpperCase() + key.slice(1)}
+                data={filteredData}
+                tableKey={key}
+                configs={configs}
+                onEdit={handleEdit}
+                onResend={(row) => handleResend(key, row)}
+                resendLoadingId={resendLoadingId}
+                onAddNew={null}
+                onDelete={handleDelete}
+                onRefreshRow={handleRefreshRow}
+                setShowExhibitorManager={setShowExhibitorManager}
+                setShowPartnerManager={setShowPartnerManager}
+                PAGE_SIZE={PAGE_SIZE}
+                HIDDEN_FIELDS={HIDDEN_FIELDS}
+                prettifyKey={prettifyKey}
+                searchTerm={searchTerm} // Pass search term to highlight
+              />
+            );
+          })}
         </div>
 
         <EditModal

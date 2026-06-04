@@ -1,23 +1,11 @@
 import React, { useEffect, useState } from "react";
 
-/**
- * TicketCategorySelector (manager-backed, responsive)
- *
- * - Reads ticket category amounts from localStorage (key: "ticket_categories_local_v1")
- * - Falls back to built-in defaults
- * - Emits onChange(value, meta) where meta = { price, gstRate, gstAmount, total, label }
- *
- * Responsiveness:
- * - Cards are full-width on small screens and fixed width on >=sm
- * - Feature list collapses into a <details> on small screens to save vertical space
- * - Buttons are full-width on small screens
- */
-
 const DEFAULT_CATEGORIES_BY_ROLE = {
   visitors: [
     { value: "free", label: "Free", price: 0, gst: 0, features: ["Entry to Expo", "Access to General Sessions"], button: "Get Free Ticket" },
     { value: "premium", label: "Premium", price: 2500, gst: 0.18, features: ["Priority Access", "Premium Lounge", "E-Ticket with QR"], button: "Get Premium Ticket" },
-    { value: "combo", label: "Combo", price: 5000, gst: 0.18, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" }
+    { value: "combo", label: "Combo", price: 5000, gst: 0.18, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" },
+    { value: "premium_delegate", label: "Premium Delegate", price: 5085, gst: 0.18, features: ["VIP Entry", "Premium Lounge Access", "Networking Dinner", "E-Ticket with QR & Badge", "Priority Seating"], button: "Get Premium Delegate" }
   ],
   partners: [
     { value: "premium", label: "Premium", price: 15000, gst: 0.18, features: ["Partner Branding", "Premium Booth", "Speaker slot"], button: "Get Premium" }
@@ -36,7 +24,6 @@ function safeNumber(v) {
 
 function formatCurrency(n) {
   const num = Number(n) || 0;
-  // Intl currency formatting can vary - using rupee sign + localized number
   return `₹${num.toLocaleString("en-IN")}`;
 }
 
@@ -84,6 +71,7 @@ function findCategoryByValue(value, categories) {
 function fallbackCategoryMeta(value, role) {
   if (!value) return { price: 0, gst: 0, label: value || "" };
   const v = String(value).toLowerCase();
+  if (v.includes("premium_delegate")) return { price: 5085, gst: 0.18, label: "Premium Delegate" };
   if (v.includes("combo")) return { price: 5000, gst: 0.18, label: "Combo" };
   if (v.includes("premium")) {
     if (role === "partners") return { price: 15000, gst: 0.18, label: "Premium" };
@@ -130,11 +118,10 @@ export default function TicketCategorySelector({ role = "visitors", value, onCha
     onChange(opt.value, { price, gstRate, gstAmount, total, label });
   };
 
-  // Render responsive cards: full width on small screens, fixed width on >=sm
   return (
     <div className="bg-white py-6 px-4">
       <div className="max-w-7xl mx-auto">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {opts.map(opt => {
             const price = Number(opt.price || 0);
             const gstRate = Number(opt.gst || 0);
@@ -157,7 +144,6 @@ export default function TicketCategorySelector({ role = "visitors", value, onCha
                     {gstRate ? <span className="text-sm font-normal ml-2">+ {formatCurrency(gstAmount)} GST</span> : <span className="text-sm font-normal ml-2">No GST</span>}
                   </div>
 
-                  {/* Features: show inline on wide, collapse on small */}
                   <div className="mb-3">
                     <div className="hidden sm:block text-sm text-gray-700">
                       <ul className="list-disc pl-5">
