@@ -4,7 +4,7 @@ const DEFAULT_CATEGORIES_BY_ROLE = {
   visitors: [
     { value: "free", label: "Free", price: 0, gst: 0, features: ["Entry to Expo", "Access to General Sessions"], button: "Get Free Ticket" },
     { value: "premium", label: "Premium", price: 5085, gst: 915, features: ["Priority Access", "Premium Lounge", "E-Ticket with QR"], button: "Get Premium Ticket" },
-    { value: "combo", label: "Combo", price: 5, gst: 1, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" },
+    { value: "combo", label: "Combo", price: 5000, gst: 100, features: ["All Premium Benefits", "Multiple Slot Access"], button: "Get Combo Ticket" },
   ]
 };
 
