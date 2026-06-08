@@ -52,38 +52,6 @@ function isEmailLike(v) {
   return typeof v === "string" && /\S+@\S+\.\S+/.test(v);
 }
 
-/* Use server's /api/reminders/scheduled route to schedule/send reminders */
-async function scheduleReminder(entityId, eventDate) {
-  if (!entityId || !eventDate) return { ok: false, error: "missing" };
-
-  try {
-    const payload = {
-      entity: "speakers",
-      entityId: String(entityId),
-      scheduleDays: [7, 3, 1, 0],
-    };
-    const res = await fetch(apiUrl("/api/reminders/scheduled"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "69420",
-      },
-      body: JSON.stringify(payload),
-    });
-    const txt = await res.text().catch(() => null);
-    let js = null;
-    try {
-      js = txt ? JSON.parse(txt) : null;
-    } catch {}
-    if (!res.ok) {
-      return { ok: false, status: res.status, body: js || txt };
-    }
-    return { ok: true, status: res.status, body: js || txt };
-  } catch (e) {
-    return { ok: false, error: String(e) };
-  }
-}
-
 /* UI helpers */
 function EventDetailsBlock({ event }) {
   if (!event)
@@ -167,9 +135,9 @@ export default function Speakers() {
   const isMobile = useIsMobile(1024);
 
   const videoUrl =
-  config?.backgroundMedia?.type === "video"
-    ? config.backgroundMedia.url
-    : null;
+    config?.backgroundMedia?.type === "video"
+      ? config.backgroundMedia.url
+      : null;
   const [primaryColor, setPrimaryColor] = useState("#196e87");
 
   useEffect(() => {
@@ -391,7 +359,6 @@ export default function Speakers() {
     }
   }
 
-  /* Finalize:  save speaker (backend sends ACK email automatically) */
   async function finalizeRegistrationAndSend(submittedForm) {
     if (processing) return;
     setProcessing(true);
@@ -434,25 +401,11 @@ export default function Speakers() {
       const savedSpeaker = { ...payload, id: insertedId };
       setSpeaker(savedSpeaker);
 
-      // Backend already sent ACK email automatically - no need to send manually here
-
-      // Schedule reminder using server's /api/reminders/scheduled (best-effort)
-      try {
-        const evDate =
-          (config &&
-            config.eventDetails &&
-            (config.eventDetails.date || config.eventDetails.dates)) ||
-          (canonicalEvent && (canonicalEvent.date || canonicalEvent.dates)) ||
-          (formData && (formData.eventDates || formData.date)) ||
-          null;
-        if (insertedId && evDate) {
-          const sch = await scheduleReminder(insertedId, evDate);
-          if (!sch || !sch.ok) {
-            console.warn("Reminder scheduling issue", sch);
-          }
-        }
-      } catch (e) {
-        console.warn("scheduleReminder error", e);
+      // ✅ Backend handles reminders automatically via scheduleDynamicReminder()
+      if (insertedId) {
+        console.log(
+          "[Speakers] Registration successful, reminder scheduled by backend",
+        );
       }
 
       // Mark submission complete and clear form

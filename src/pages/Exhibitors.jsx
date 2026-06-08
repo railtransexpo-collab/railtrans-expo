@@ -208,27 +208,6 @@ async function saveExhibitorApi(payload) {
   return json;
 }
 
-/* REMINDER helper */
-async function scheduleReminder(entityId, eventDate) {
-  try {
-    if (!entityId || !eventDate) return;
-    const payload = { entity: "exhibitors", entityId, eventDate };
-    const res = await fetch(apiUrl("/api/reminders/scheduled"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        entity: "exhibitors",
-        entityId,
-        scheduleDays: [0], // send immediately
-      }),
-    });
-  } catch (e) {
-    console.warn("[Exhibitors] scheduleReminder error:", e);
-  }
-}
-
 async function saveStep(stepName, data = {}, meta = {}) {
   try {
     await fetch(apiUrl("/api/exhibitors/step"), {
@@ -305,11 +284,11 @@ export default function Exhibitors() {
   const isMobile = useIsMobile(1024);
   const apiBase = getApiBaseFromEnvOrWindow();
   const videoRef = useRef(null);
- 
+
   const videoUrl =
-  config?.backgroundMedia?.type === "video"
-    ? config.backgroundMedia.url
-    : null;
+    config?.backgroundMedia?.type === "video"
+      ? config.backgroundMedia.url
+      : null;
   const [primaryColor, setPrimaryColor] = useState("#196e87");
 
   useEffect(() => {
@@ -605,9 +584,10 @@ export default function Exhibitors() {
         verificationToken: verificationToken,
       });
 
+      // ✅ Backend handles reminders automatically via scheduleDynamicReminder()
       if (json?.insertedId) {
-        scheduleReminder(json.insertedId, config?.eventDetails?.date).catch(
-          () => {},
+        console.log(
+          "[Exhibitors] Registration successful, reminder scheduled by backend",
         );
       }
 
@@ -787,9 +767,9 @@ export default function Exhibitors() {
           )}
         </div>
       </div>
-       <div className="mt-16">
-  <Footer primaryColor={primaryColor} />
-</div>
+      <div className="mt-16">
+        <Footer primaryColor={primaryColor} />
+      </div>
     </div>
   );
 }

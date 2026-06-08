@@ -30,37 +30,6 @@ function normalizeAdminUrl(url) {
   return `${base}/${t}`;
 }
 
-/* ---------- reminder helper ---------- */
-async function scheduleReminderClient(entityId) {
-  if (!entityId) return { ok: false, error: "missing entityId" };
-  try {
-    const payload = {
-      entity: "visitors",
-      entityId: String(entityId),
-      scheduleDays: [7, 3, 1, 0],
-    };
-    const res = await fetch(`${API_BASE}/api/reminders/scheduled`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "69420",
-      },
-      body: JSON.stringify(payload),
-    });
-    const txt = await res.text().catch(() => null);
-    let js = null;
-    try {
-      js = txt ? JSON.parse(txt) : null;
-    } catch {}
-    if (!res.ok) {
-      return { ok: false, status: res.status, body: js || txt };
-    }
-    return { ok: true, status: res.status, body: js || txt };
-  } catch (e) {
-    return { ok: false, error: String(e) };
-  }
-}
-
 /* ---------- Visitors component ---------- */
 export default function Visitors() {
   const [step, setStep] = useState(1);
@@ -395,28 +364,13 @@ export default function Visitors() {
         ticket_total: ticketMeta.total,
       });
 
-      // Schedule reminder (best-effort)
+      // ✅ Backend handles reminders automatically via scheduleDynamicReminder()
       if (saveResult.id) {
-        try {
-          const schedRes = await scheduleReminderClient(saveResult.id);
-          if (schedRes && schedRes.ok) {
-            setReminderScheduled(true);
-            setReminderError("");
-          } else {
-            setReminderScheduled(false);
-            const errMsg =
-              (schedRes &&
-                (schedRes.error || schedRes.body || schedRes.status)) ||
-              "Schedule failed";
-            setReminderError(String(errMsg).slice(0, 500));
-            console.warn(
-              "[Visitors] scheduleReminderClient response:",
-              schedRes,
-            );
-          }
-        } catch (e) {
-          console.warn("[Visitors] schedule reminder step failed", e);
-        }
+        console.log(
+          "[Visitors] Registration successful, reminder scheduled by backend",
+        );
+        setReminderScheduled(true); // Show success message
+        setReminderError("");
       }
 
       setStep(4);
@@ -753,9 +707,9 @@ export default function Visitors() {
           )}
         </div>
       </div>
-       <div className="mt-16">
-  <Footer primaryColor={primaryColor} />
-</div>
+      <div className="mt-16">
+        <Footer primaryColor={primaryColor} />
+      </div>
     </div>
   );
 }

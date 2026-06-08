@@ -132,28 +132,6 @@ async function saveAwardeeApi(payload) {
   return json;
 }
 
-/* REMINDERS:  POST /api/reminders/send (ngrok header) */
-async function scheduleReminder(entityId, eventDate) {
-  try {
-    if (!entityId || !eventDate) return;
-    const payload = { entity: "awardees", entityId, eventDate };
-    const res = await fetch(apiUrl("/api/reminders/send"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "69420",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      console.warn("[Awardees] reminder scheduling failed:", res.status, txt);
-    }
-  } catch (e) {
-    console.warn("[Awardees] scheduleReminder error:", e);
-  }
-}
-
 /* UI helper */
 function EventDetailsBlock({ event }) {
   if (!event)
@@ -493,10 +471,11 @@ export default function Awardees() {
         res.ticket_code || (res.saved && res.saved.ticket_code) || null,
       );
 
-      const eventDate =
-        canonicalEvent && canonicalEvent.date ? canonicalEvent.date : null;
-      if (eventDate && res.insertedId) {
-        scheduleReminder(res.insertedId, eventDate).catch(() => {});
+      // ✅ Backend handles reminders automatically via scheduleDynamicReminder()
+      if (res.insertedId) {
+        console.log(
+          "[Awardees] Registration successful, reminder scheduled by backend",
+        );
       }
 
       setStep(2);
