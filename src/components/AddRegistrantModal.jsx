@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import TicketCategorySelector from "../components/TicketCategoryGenerator";
+import ManualPaymentStep from "../components/ManualPayemntStep";
 import ThankYouMessage from "../components/ThankYouMessage";
 
 /**
@@ -11,6 +12,7 @@ import ThankYouMessage from "../components/ThankYouMessage";
  * - Before create: when email is entered, check whether same email already exists
  *   in the same registration collection (uses /api/otp/check-email).
  * - SKIP email duplication check for EXHIBITORS and PARTNERS
+ * - For visitors with paid tickets, show manual payment step
  */
 
 export default function AddRegistrantModal({
@@ -29,7 +31,7 @@ export default function AddRegistrantModal({
   ];
   const navigate = useNavigate();
 
-  const [step, setStep] = useState("selectRole"); // selectRole | selectCategory | form | done
+  const [step, setStep] = useState("selectRole"); // selectRole | selectCategory | form | payment | done
   const [role, setRole] = useState(defaultRole);
   const [ticketCategory, setTicketCategory] = useState("");
   const [ticketMeta, setTicketMeta] = useState({
@@ -43,6 +45,11 @@ export default function AddRegistrantModal({
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
   const [sendingEmail, setSendingEmail] = useState(false);
+  
+  // Payment related states
+  const [txId, setTxId] = useState("");
+  const [proofFile, setProofFile] = useState(null);
+  const [registrantId, setRegistrantId] = useState(null);
 
   // Email existence check state
   const [existing, setExisting] = useState(null);
@@ -70,6 +77,9 @@ export default function AddRegistrantModal({
     setSendingEmail(false);
     setExisting(null);
     setCheckingEmail(false);
+    setTxId("");
+    setProofFile(null);
+    setRegistrantId(null);
     if (checkTimerRef.current) {
       clearTimeout(checkTimerRef.current);
       checkTimerRef.current = null;
@@ -173,7 +183,13 @@ export default function AddRegistrantModal({
       const init = makeInitialValues(normalized);
       setFields(normalized);
       setValues(init);
-      setStep("form");
+      
+      // If visitor with paid ticket, go to payment step, else go to form
+      if (selectedRole === "visitor" && ticketMeta.total > 0) {
+        setStep("payment");
+      } else {
+        setStep("form");
+      }
     } catch (e) {
       console.warn("loadConfig error", e);
       setMsg("Failed to load form");
@@ -267,54 +283,69 @@ export default function AddRegistrantModal({
     };
   }, [values.email, values.emailAddress, role, step]);
 
-  /* ---------------- send ticket email ---------------- */
-  async function sendTicketEmail(registrantData, isPaidTicket) {
+  /* ---------------- create visitor after payment ---------------- */
+  async function createVisitorAfterPayment() {
+    setLoading(true);
+    setMsg("");
+
     try {
-      const emailType = isPaidTicket ? "delegate_ticket" : "visitor_ticket";
-      const emailPayload = {
-        to: registrantData.email,
-        subject: isPaidTicket
-          ? "Your Delegate Ticket - RailTrans Expo"
-          : "Your Visitor Registration - RailTrans Expo",
-        registrantData: {
-          name: registrantData.name,
-          email: registrantData.email,
-          mobile: registrantData.mobile,
-          ticket_category: registrantData.ticket_category,
-          ticket_label: registrantData.ticket_label,
-          ticket_price: registrantData.ticket_price,
-          ticket_total: registrantData.ticket_total,
-          registration_id: registrantData.id,
-          role: role,
-        },
-        emailType: emailType,
+      const collection = `${role}s`;
+
+      const payload = {
+        ...values,
+        ticket_category: ticketCategory || null,
+        ticket_label: ticketMeta.label || null,
+        ticket_price: ticketMeta.price || 0,
+        ticket_gst: ticketMeta.gstAmount || 0,
+        ticket_total: ticketMeta.total || 0,
+        txId: txId, // Pass the payment transaction ID
+        added_by_admin: true,
+        admin_created_at: new Date().toISOString(),
       };
 
-      const response = await fetch(apiUrl("/api/send-ticket-email"), {
+      const res = await fetch(apiUrl(`/api/${collection}`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(emailPayload),
+        body: JSON.stringify(payload),
       });
 
-      const result = await response.json();
-      if (response.ok && result.success) {
-        console.log(
-          `${emailType} email sent successfully to ${registrantData.email}`,
-        );
-        return true;
-      } else {
-        console.error("Failed to send ticket email:", result.error);
-        return false;
+      const js = await res.json().catch(() => null);
+      if (!res.ok) {
+        setMsg(js?.error || "Create failed");
+        setLoading(false);
+        return;
       }
-    } catch (error) {
-      console.error("Error sending ticket email:", error);
-      return false;
+
+      const newRegistrantId = js.id || js.insertedId || js._id;
+      setRegistrantId(newRegistrantId);
+
+      setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
+      onCreated && onCreated(js, collection);
+      setStep("done");
+      setTimeout(() => onClose(), 1500);
+
+    } catch (err) {
+      console.error("AddRegistrantModal create error", err);
+      setMsg("Error creating record");
+    } finally {
+      setLoading(false);
     }
   }
 
   /* ---------------- submit with email sending ---------------- */
   async function handleCreate(e) {
     e.preventDefault();
+    
+    // If visitor with paid ticket, go to payment step
+    if (role === "visitor" && ticketMeta.total > 0) {
+      setStep("payment");
+      return;
+    }
+    
+    await processCreate();
+  }
+
+  async function processCreate() {
     setLoading(true);
     setMsg("");
 
@@ -368,8 +399,8 @@ export default function AddRegistrantModal({
 
       const registrantId = js.id || js.insertedId || js._id;
 
-      // ✅ ONLY auto-send ticket for VISITORS
-      if (role === "visitor" && registrantId) {
+      // ✅ ONLY auto-send ticket for VISITORS with free tickets
+      if (role === "visitor" && registrantId && ticketMeta.total === 0) {
         setSendingEmail(true);
         try {
           const ticketUrl = apiUrl(`/api/visitors/${encodeURIComponent(String(registrantId))}/send-ticket`);
@@ -462,7 +493,7 @@ export default function AddRegistrantModal({
           <h3 className="text-lg font-semibold">Add Registrant (Admin)</h3>
           <p className="text-sm text-gray-500 mt-1">
             {ticketMeta.total > 0
-              ? "Will send DELEGATE ticket"
+              ? "Will require payment before sending DELEGATE ticket"
               : "Will send VISITOR ticket"}
           </p>
         </div>
@@ -555,8 +586,8 @@ export default function AddRegistrantModal({
                       </p>
                       <p className="text-sm mt-1">
                         {ticketMeta.total > 0
-                          ? `Amount: ${formatCurrency(ticketMeta.total)} - The registrant will receive a DELEGATE ticket email.`
-                          : "The registrant will receive a VISITOR ticket email."}
+                          ? `Amount: ${formatCurrency(ticketMeta.total)} - Payment required before sending ticket email.`
+                          : "The registrant will receive a VISITOR ticket email immediately."}
                       </p>
                     </div>
                   </div>
@@ -570,7 +601,7 @@ export default function AddRegistrantModal({
                   onClick={() => loadConfig(role)}
                   disabled={!ticketCategory}
                 >
-                  Continue to Form →
+                  Continue to {ticketMeta.total > 0 ? "Payment" : "Form"} →
                 </button>
                 <button
                   className="px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors"
@@ -589,6 +620,24 @@ export default function AddRegistrantModal({
                 </button>
               </div>
             </div>
+          )}
+
+          {step === "payment" && (
+            <ManualPaymentStep
+              ticketType={ticketCategory}
+              ticketPrice={ticketMeta.total || 0}
+              onProofUpload={(paymentTxId) => {
+                if (paymentTxId) {
+                  setTxId(paymentTxId);
+                  createVisitorAfterPayment();
+                }
+              }}
+              onTxIdChange={(val) => setTxId(val)}
+              txId={txId}
+              proofFile={proofFile}
+              setProofFile={setProofFile}
+              apiBase={apiBase}
+            />
           )}
 
           {step === "form" && (
@@ -775,7 +824,9 @@ export default function AddRegistrantModal({
                     ? "Creating..."
                     : sendingEmail
                       ? "Sending Email..."
-                      : "Create & Send Ticket"}
+                      : ticketMeta.total > 0 && role === "visitor"
+                        ? "Continue to Payment"
+                        : "Create"}
                 </button>
                 <button
                   type="button"
