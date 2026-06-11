@@ -50,6 +50,7 @@ export default function AddRegistrantModal({
   const [txId, setTxId] = useState("");
   const [proofFile, setProofFile] = useState(null);
   const [registrantId, setRegistrantId] = useState(null);
+  const [showPayment, setShowPayment] = useState(false); // Track if payment should be shown
 
   // Email existence check state
   const [existing, setExisting] = useState(null);
@@ -80,6 +81,7 @@ export default function AddRegistrantModal({
     setTxId("");
     setProofFile(null);
     setRegistrantId(null);
+    setShowPayment(false);
     if (checkTimerRef.current) {
       clearTimeout(checkTimerRef.current);
       checkTimerRef.current = null;
@@ -184,12 +186,8 @@ export default function AddRegistrantModal({
       setFields(normalized);
       setValues(init);
       
-      // If visitor with paid ticket, go to payment step, else go to form
-      if (selectedRole === "visitor" && ticketMeta.total > 0) {
-        setStep("payment");
-      } else {
-        setStep("form");
-      }
+      // ALWAYS go to form first for visitors, then decide payment
+      setStep("form");
     } catch (e) {
       console.warn("loadConfig error", e);
       setMsg("Failed to load form");
@@ -219,7 +217,6 @@ export default function AddRegistrantModal({
     // ✅ SKIP email check for exhibitors and partners
     if (step !== "form") return;
     if (role === "exhibitor" || role === "partner") {
-      // No email duplication check for exhibitors/partners
       setExisting(null);
       setMsg("");
       setCheckingEmail(false);
@@ -235,7 +232,6 @@ export default function AddRegistrantModal({
       return;
     }
 
-    // debounce
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
     checkTimerRef.current = setTimeout(async () => {
       try {
@@ -298,7 +294,7 @@ export default function AddRegistrantModal({
         ticket_price: ticketMeta.price || 0,
         ticket_gst: ticketMeta.gstAmount || 0,
         ticket_total: ticketMeta.total || 0,
-        txId: txId, // Pass the payment transaction ID
+        txId: txId,
         added_by_admin: true,
         admin_created_at: new Date().toISOString(),
       };
@@ -336,8 +332,9 @@ export default function AddRegistrantModal({
   async function handleCreate(e) {
     e.preventDefault();
     
-    // If visitor with paid ticket, go to payment step
+    // If visitor with paid ticket, show payment step
     if (role === "visitor" && ticketMeta.total > 0) {
+      setShowPayment(true);
       setStep("payment");
       return;
     }
@@ -399,7 +396,6 @@ export default function AddRegistrantModal({
 
       const registrantId = js.id || js.insertedId || js._id;
 
-      // ✅ ONLY auto-send ticket for VISITORS with free tickets
       if (role === "visitor" && registrantId && ticketMeta.total === 0) {
         setSendingEmail(true);
         try {
@@ -419,7 +415,6 @@ export default function AddRegistrantModal({
           setSendingEmail(false);
         }
       } else {
-        // Exhibitors, Partners, Speakers, Awardees - no auto email
         setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
       }
 
@@ -467,7 +462,6 @@ export default function AddRegistrantModal({
     );
   }
 
-  // Handle ticket selection with meta data
   const handleTicketSelect = (value, meta = {}) => {
     setTicketCategory(value);
     setTicketMeta(meta || { price: 0, gstAmount: 0, total: 0, label: "" });
@@ -477,7 +471,6 @@ export default function AddRegistrantModal({
 
   if (!open) return null;
 
-  // ✅ Allow creation for exhibitors/partners even if email exists
   const createDisabled = 
     (role !== "exhibitor" && role !== "partner") && 
     (checkingEmail || (existing && String(existing.collection) === ensurePluralRole(role)));
@@ -534,14 +527,12 @@ export default function AddRegistrantModal({
 
           {step === "selectCategory" && (
             <div className="space-y-5">
-              {/* Ticket Category Selector */}
               <TicketCategorySelector
                 role={role}
                 value={ticketCategory}
                 onChange={handleTicketSelect}
               />
 
-              {/* Info Messages */}
               {ticketCategory && (
                 <div
                   className={`p-4 rounded-lg border ${
@@ -553,36 +544,18 @@ export default function AddRegistrantModal({
                   <div className="flex items-start gap-3">
                     <div className="flex-shrink-0">
                       {ticketMeta.total > 0 ? (
-                        <svg
-                          className="w-5 h-5 text-blue-600"
-                          fill="currentColor"
-                          viewBox="0 0 20 20"
-                        >
-                          <path
-                            fillRule="evenodd"
-                            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
-                            clipRule="evenodd"
-                          />
+                        <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                         </svg>
                       ) : (
-                        <svg
-                          className="w-5 h-5 text-green-600"
-                          fill="currentColor"
-                          viewBox="0 0 20 20"
-                        >
-                          <path
-                            fillRule="evenodd"
-                            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                            clipRule="evenodd"
-                          />
+                        <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                         </svg>
                       )}
                     </div>
                     <div>
                       <p className="text-sm font-medium">
-                        {ticketMeta.total > 0
-                          ? "DELEGATE Ticket (Paid)"
-                          : "VISITOR Ticket (Free)"}
+                        {ticketMeta.total > 0 ? "DELEGATE Ticket (Paid)" : "VISITOR Ticket (Free)"}
                       </p>
                       <p className="text-sm mt-1">
                         {ticketMeta.total > 0
@@ -594,14 +567,13 @@ export default function AddRegistrantModal({
                 </div>
               )}
 
-              {/* Action Buttons */}
               <div className="flex gap-3 pt-2">
                 <button
-                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
                   onClick={() => loadConfig(role)}
                   disabled={!ticketCategory}
                 >
-                  Continue to {ticketMeta.total > 0 ? "Payment" : "Form"} →
+                  Continue to Form →
                 </button>
                 <button
                   className="px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium transition-colors"
@@ -661,22 +633,16 @@ export default function AddRegistrantModal({
                 if (f.type === "select") {
                   return (
                     <div key={key}>
-                      <label className="block mb-1">
-                        {f.label} {required && "*"}
-                      </label>
+                      <label className="block mb-1">{f.label} {required && "*"}</label>
                       <select
                         className="w-full border px-3 py-2"
                         value={val ?? ""}
-                        onChange={(e) =>
-                          updateValue(key, e.target.value, "text")
-                        }
+                        onChange={(e) => updateValue(key, e.target.value, "text")}
                         required={required}
                       >
                         <option value="">{required ? "Select" : "None"}</option>
                         {options.map((o, idx) => (
-                          <option key={idx} value={o.value}>
-                            {o.label}
-                          </option>
+                          <option key={idx} value={o.value}>{o.label}</option>
                         ))}
                       </select>
                     </div>
@@ -686,9 +652,7 @@ export default function AddRegistrantModal({
                 if (f.type === "radio") {
                   return (
                     <div key={key}>
-                      <label className="block mb-1">
-                        {f.label} {required && "*"}
-                      </label>
+                      <label className="block mb-1">{f.label} {required && "*"}</label>
                       <div className="flex gap-4">
                         {options.map((o, idx) => (
                           <label key={idx} className="flex items-center gap-2">
@@ -697,9 +661,7 @@ export default function AddRegistrantModal({
                               name={key}
                               value={o.value}
                               checked={String(val) === String(o.value)}
-                              onChange={(e) =>
-                                updateValue(key, e.target.value, "text")
-                              }
+                              onChange={(e) => updateValue(key, e.target.value, "text")}
                               required={required}
                             />
                             <span>{o.label}</span>
@@ -716,13 +678,9 @@ export default function AddRegistrantModal({
                       <input
                         type="checkbox"
                         checked={!!val}
-                        onChange={(e) =>
-                          updateValue(key, e.target.checked, "checkbox")
-                        }
+                        onChange={(e) => updateValue(key, e.target.checked, "checkbox")}
                       />
-                      <span>
-                        {f.label} {required && "*"}
-                      </span>
+                      <span>{f.label} {required && "*"}</span>
                     </label>
                   );
                 }
@@ -730,38 +688,27 @@ export default function AddRegistrantModal({
                 if (f.type === "textarea") {
                   return (
                     <div key={key}>
-                      <label className="block mb-1">
-                        {f.label} {required && "*"}
-                      </label>
+                      <label className="block mb-1">{f.label} {required && "*"}</label>
                       <textarea
                         className="w-full border px-3 py-2"
                         value={val ?? ""}
-                        onChange={(e) =>
-                          updateValue(key, e.target.value, "text")
-                        }
+                        onChange={(e) => updateValue(key, e.target.value, "text")}
                         required={required}
                       />
                     </div>
                   );
                 }
 
-                const inputType = ["number", "email", "tel"].includes(f.type)
-                  ? f.type
-                  : "text";
+                const inputType = ["number", "email", "tel"].includes(f.type) ? f.type : "text";
                 return (
                   <div key={key}>
-                    <label className="block mb-1">
-                      {f.label} {required && "*"}
-                    </label>
+                    <label className="block mb-1">{f.label} {required && "*"}</label>
                     <input
                       className="w-full border px-3 py-2"
                       value={val ?? ""}
                       onChange={(e) => {
                         updateValue(key, e.target.value, f.type);
-                        if (
-                          key === "email" ||
-                          key.toLowerCase().includes("email")
-                        ) {
+                        if (key === "email" || key.toLowerCase().includes("email")) {
                           setExisting(null);
                           setMsg("");
                         }
@@ -769,15 +716,9 @@ export default function AddRegistrantModal({
                       required={required}
                       type={inputType}
                     />
-
-                    {(key === "email" ||
-                      key.toLowerCase().includes("email")) && (
+                    {(key === "email" || key.toLowerCase().includes("email")) && (
                       <>
-                        {checkingEmail && (
-                          <div className="text-xs text-gray-600 mt-1">
-                            Checking email...
-                          </div>
-                        )}
+                        {checkingEmail && <div className="text-xs text-gray-600 mt-1">Checking email...</div>}
                         {existing && msg && (
                           <div className="text-xs mt-1 p-2 bg-yellow-50 border border-yellow-100 rounded text-[#b45309]">
                             <div>{msg}</div>
@@ -798,18 +739,13 @@ export default function AddRegistrantModal({
                 );
               })}
 
-              {/* Display ticket type info in form */}
               <div className="mt-2 p-3 bg-gray-50 rounded border">
                 <p className="text-sm">
                   <strong>Ticket Type:</strong>{" "}
                   {ticketMeta.total > 0 ? (
-                    <span className="text-blue-600 font-semibold">
-                      DELEGATE (Paid - ₹{ticketMeta.total})
-                    </span>
+                    <span className="text-blue-600 font-semibold">DELEGATE (Paid - ₹{ticketMeta.total})</span>
                   ) : (
-                    <span className="text-green-600 font-semibold">
-                      VISITOR (Free)
-                    </span>
+                    <span className="text-green-600 font-semibold">VISITOR (Free)</span>
                   )}
                 </p>
               </div>
@@ -820,13 +756,7 @@ export default function AddRegistrantModal({
                   disabled={loading || createDisabled || sendingEmail}
                   className={`px-4 py-2 bg-green-600 text-white rounded ${createDisabled || sendingEmail ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
-                  {loading
-                    ? "Creating..."
-                    : sendingEmail
-                      ? "Sending Email..."
-                      : ticketMeta.total > 0 && role === "visitor"
-                        ? "Continue to Payment"
-                        : "Create"}
+                  {loading ? "Creating..." : sendingEmail ? "Sending Email..." : "Create"}
                 </button>
                 <button
                   type="button"
@@ -834,12 +764,7 @@ export default function AddRegistrantModal({
                   onClick={() => {
                     setStep("selectRole");
                     setTicketCategory("");
-                    setTicketMeta({
-                      price: 0,
-                      gstAmount: 0,
-                      total: 0,
-                      label: "",
-                    });
+                    setTicketMeta({ price: 0, gstAmount: 0, total: 0, label: "" });
                   }}
                 >
                   Cancel
