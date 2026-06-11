@@ -10,6 +10,7 @@ import ThankYouMessage from "../components/ThankYouMessage";
  * - Create record AND send appropriate ticket email (Visitor/Delegate based on ticket category)
  * - Before create: when email is entered, check whether same email already exists
  *   in the same registration collection (uses /api/otp/check-email).
+ * - SKIP email duplication check for EXHIBITORS and PARTNERS
  */
 
 export default function AddRegistrantModal({
@@ -122,6 +123,11 @@ export default function AddRegistrantModal({
       .toLowerCase();
   }
 
+  function formatCurrency(amount) {
+    const num = Number(amount) || 0;
+    return `₹${num.toLocaleString("en-IN")}`;
+  }
+
   /* ---------------- config load ---------------- */
 
   async function loadConfig(selectedRole) {
@@ -193,10 +199,17 @@ export default function AddRegistrantModal({
   }
 
   /* ---------------- email existence check (debounced) ---------------- */
-
   useEffect(() => {
-    // Only run when on form step and email field exists
+    // ✅ SKIP email check for exhibitors and partners
     if (step !== "form") return;
+    if (role === "exhibitor" || role === "partner") {
+      // No email duplication check for exhibitors/partners
+      setExisting(null);
+      setMsg("");
+      setCheckingEmail(false);
+      return;
+    }
+
     const emailRaw = values.email || values.emailAddress || "";
     const email = normalizeEmail(emailRaw);
     if (!email) {
@@ -254,7 +267,7 @@ export default function AddRegistrantModal({
     };
   }, [values.email, values.emailAddress, role, step]);
 
-  /* ---------------- NEW: Send ticket email based on category ---------------- */
+  /* ---------------- send ticket email ---------------- */
   async function sendTicketEmail(registrantData, isPaidTicket) {
     try {
       const emailType = isPaidTicket ? "delegate_ticket" : "visitor_ticket";
@@ -308,7 +321,9 @@ export default function AddRegistrantModal({
     try {
       const emailRaw = values.email || values.emailAddress || "";
       const email = normalizeEmail(emailRaw);
-      if (email) {
+      
+      // ✅ SKIP duplicate check for exhibitors and partners
+      if (email && role !== "exhibitor" && role !== "partner") {
         try {
           const url = apiUrl(`/api/otp/check-email?email=${encodeURIComponent(email)}&type=${encodeURIComponent(role)}`);
           const res = await fetch(url, { headers: { Accept: "application/json" } });
@@ -373,8 +388,8 @@ export default function AddRegistrantModal({
           setSendingEmail(false);
         }
       } else {
-        // Exhibitors, Partners, Speakers, Awardees - use button in dashboard
-        setMsg("Registrant created! Use 'Send Ticket' button to send badge.");
+        // Exhibitors, Partners, Speakers, Awardees - no auto email
+        setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
       }
 
       onCreated && onCreated(js, collection);
@@ -388,11 +403,6 @@ export default function AddRegistrantModal({
       setLoading(false);
       setSendingEmail(false);
     }
-  }
-  // Add this helper function near the top with other helpers
-  function formatCurrency(amount) {
-    const num = Number(amount) || 0;
-    return `₹${num.toLocaleString("en-IN")}`;
   }
 
   function handleUpgradeNavigate() {
@@ -436,9 +446,10 @@ export default function AddRegistrantModal({
 
   if (!open) return null;
 
-  const createDisabled =
-    checkingEmail ||
-    (existing && String(existing.collection) === ensurePluralRole(role));
+  // ✅ Allow creation for exhibitors/partners even if email exists
+  const createDisabled = 
+    (role !== "exhibitor" && role !== "partner") && 
+    (checkingEmail || (existing && String(existing.collection) === ensurePluralRole(role)));
 
   return (
     <div className="fixed inset-0 z-50 flex justify-center items-start p-6">

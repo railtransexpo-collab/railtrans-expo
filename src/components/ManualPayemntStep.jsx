@@ -162,6 +162,28 @@ export default function ManualPaymentStep({
       setCouponBusy(false);
     }
   }
+  // Add this function after applyCoupon
+  async function markCouponAsUsed(couponId) {
+    if (!couponId) return;
+    try {
+      const res = await fetch(makeUrl(`/api/coupons/${couponId}/use`), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "69420",
+        },
+        body: JSON.stringify({ used_by: "payment_success" }),
+      });
+      if (res.ok) {
+        console.log("[ManualPaymentStep] Coupon marked as used");
+        // Clear coupon from session storage
+        sessionStorage.removeItem("couponCode");
+        sessionStorage.removeItem("couponResult");
+      }
+    } catch (e) {
+      console.error("Failed to mark coupon as used:", e);
+    }
+  }
 
   async function createOrder() {
     setError("");
@@ -348,6 +370,9 @@ export default function ManualPaymentStep({
             pollRef.current = null;
 
             setPaymentStatus("paid");
+            if (couponResult && couponResult.coupon && couponResult.coupon.id) {
+              await markCouponAsUsed(couponResult.coupon.id);
+            }
 
             const rec = js.record || js.data || js.payment || js;
 
