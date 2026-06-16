@@ -12,7 +12,7 @@ import ThankYouMessage from "../components/ThankYouMessage";
  * - Before create: when email is entered, check whether same email already exists
  *   in the same registration collection (uses /api/otp/check-email).
  * - SKIP email duplication check for EXHIBITORS and PARTNERS
- * - For visitors with paid tickets, show manual payment step
+ * - For visitors with paid tickets, show manual payment step OR skip payment option
  */
 
 export default function AddRegistrantModal({
@@ -50,7 +50,8 @@ export default function AddRegistrantModal({
   const [txId, setTxId] = useState("");
   const [proofFile, setProofFile] = useState(null);
   const [registrantId, setRegistrantId] = useState(null);
-  const [showPayment, setShowPayment] = useState(false); // Track if payment should be shown
+  const [showPayment, setShowPayment] = useState(false);
+  const [skipPayment, setSkipPayment] = useState(false); // ✅ NEW: Skip payment flag
 
   // Email existence check state
   const [existing, setExisting] = useState(null);
@@ -82,6 +83,7 @@ export default function AddRegistrantModal({
     setProofFile(null);
     setRegistrantId(null);
     setShowPayment(false);
+    setSkipPayment(false); // ✅ Reset skip payment
     if (checkTimerRef.current) {
       clearTimeout(checkTimerRef.current);
       checkTimerRef.current = null;
@@ -153,7 +155,6 @@ export default function AddRegistrantModal({
       const cols = js?.config?.fields || js?.fields || [];
       const normalized = normalizeConfigFields(cols);
 
-      // If no normalized fields returned, provide sensible defaults for visitor
       if (normalized.length === 0) {
         if (selectedRole === "visitor") {
           normalized.push(
@@ -185,8 +186,6 @@ export default function AddRegistrantModal({
       const init = makeInitialValues(normalized);
       setFields(normalized);
       setValues(init);
-      
-      // ALWAYS go to form first for visitors, then decide payment
       setStep("form");
     } catch (e) {
       console.warn("loadConfig error", e);
@@ -214,7 +213,6 @@ export default function AddRegistrantModal({
 
   /* ---------------- email existence check (debounced) ---------------- */
   useEffect(() => {
-    // ✅ SKIP email check for exhibitors and partners
     if (step !== "form") return;
     if (role === "exhibitor" || role === "partner") {
       setExisting(null);
@@ -294,7 +292,8 @@ export default function AddRegistrantModal({
         ticket_price: ticketMeta.price || 0,
         ticket_gst: ticketMeta.gstAmount || 0,
         ticket_total: ticketMeta.total || 0,
-        txId: txId,
+        payment_skipped: skipPayment, // ✅ Add skip payment flag
+        txId: skipPayment ? null : txId, // ✅ No txId if skipped
         added_by_admin: true,
         admin_created_at: new Date().toISOString(),
       };
@@ -315,7 +314,14 @@ export default function AddRegistrantModal({
       const newRegistrantId = js.id || js.insertedId || js._id;
       setRegistrantId(newRegistrantId);
 
-      setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
+      // ✅ If payment skipped, send ticket immediately
+      if (skipPayment && newRegistrantId) {
+        await sendTicketEmail(newRegistrantId);
+        setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created with DELEGATE ticket! Payment skipped.`);
+      } else {
+        setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
+      }
+
       onCreated && onCreated(js, collection);
       setStep("done");
       setTimeout(() => onClose(), 1500);
@@ -328,13 +334,30 @@ export default function AddRegistrantModal({
     }
   }
 
+  /* ---------------- Send Ticket Email ---------------- */
+  async function sendTicketEmail(registrantId) {
+    try {
+      const ticketUrl = apiUrl(`/api/visitors/${encodeURIComponent(String(registrantId))}/send-ticket`);
+      const ticketRes = await fetch(ticketUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
+      });
+      if (ticketRes.ok) {
+        console.log("Ticket email sent successfully!");
+      }
+    } catch (e) {
+      console.warn("Failed to send ticket email:", e);
+    }
+  }
+
   /* ---------------- submit with email sending ---------------- */
   async function handleCreate(e) {
     e.preventDefault();
     
-    // If visitor with paid ticket, show payment step
+    // ✅ If visitor with paid ticket, show payment step with skip option
     if (role === "visitor" && ticketMeta.total > 0) {
       setShowPayment(true);
+      setSkipPayment(false); // Reset skip payment
       setStep("payment");
       return;
     }
@@ -350,7 +373,6 @@ export default function AddRegistrantModal({
       const emailRaw = values.email || values.emailAddress || "";
       const email = normalizeEmail(emailRaw);
       
-      // ✅ SKIP duplicate check for exhibitors and partners
       if (email && role !== "exhibitor" && role !== "partner") {
         try {
           const url = apiUrl(`/api/otp/check-email?email=${encodeURIComponent(email)}&type=${encodeURIComponent(role)}`);
@@ -397,23 +419,8 @@ export default function AddRegistrantModal({
       const registrantId = js.id || js.insertedId || js._id;
 
       if (role === "visitor" && registrantId && ticketMeta.total === 0) {
-        setSendingEmail(true);
-        try {
-          const ticketUrl = apiUrl(`/api/visitors/${encodeURIComponent(String(registrantId))}/send-ticket`);
-          const ticketRes = await fetch(ticketUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "69420" },
-          });
-          if (ticketRes.ok) {
-            setMsg("Visitor created and ticket email sent!");
-          } else {
-            setMsg("Visitor created. Use Resend if needed.");
-          }
-        } catch (e) {
-          setMsg("Visitor created. Use Resend if needed.");
-        } finally {
-          setSendingEmail(false);
-        }
+        await sendTicketEmail(registrantId);
+        setMsg("Visitor created and ticket email sent!");
       } else {
         setMsg(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
       }
@@ -430,6 +437,13 @@ export default function AddRegistrantModal({
       setSendingEmail(false);
     }
   }
+
+  // ✅ Handle skip payment from payment step
+  const handleSkipPayment = () => {
+    setSkipPayment(true);
+    setShowPayment(false);
+    createVisitorAfterPayment();
+  };
 
   function handleUpgradeNavigate() {
     if (!existing) return;
@@ -486,7 +500,7 @@ export default function AddRegistrantModal({
           <h3 className="text-lg font-semibold">Add Registrant (Admin)</h3>
           <p className="text-sm text-gray-500 mt-1">
             {ticketMeta.total > 0
-              ? "Will require payment before sending DELEGATE ticket"
+              ? "Will require payment or skip payment for DELEGATE ticket"
               : "Will send VISITOR ticket"}
           </p>
         </div>
@@ -559,7 +573,7 @@ export default function AddRegistrantModal({
                       </p>
                       <p className="text-sm mt-1">
                         {ticketMeta.total > 0
-                          ? `Amount: ${formatCurrency(ticketMeta.total)} - Payment required before sending ticket email.`
+                          ? `Amount: ${formatCurrency(ticketMeta.total)} - You can process payment or skip payment.`
                           : "The registrant will receive a VISITOR ticket email immediately."}
                       </p>
                     </div>
@@ -595,21 +609,40 @@ export default function AddRegistrantModal({
           )}
 
           {step === "payment" && (
-            <ManualPaymentStep
-              ticketType={ticketCategory}
-              ticketPrice={ticketMeta.total || 0}
-              onProofUpload={(paymentTxId) => {
-                if (paymentTxId) {
-                  setTxId(paymentTxId);
-                  createVisitorAfterPayment();
-                }
-              }}
-              onTxIdChange={(val) => setTxId(val)}
-              txId={txId}
-              proofFile={proofFile}
-              setProofFile={setProofFile}
-              apiBase={apiBase}
-            />
+            <div className="space-y-4">
+              <ManualPaymentStep
+                ticketType={ticketCategory}
+                ticketPrice={ticketMeta.total || 0}
+                onProofUpload={(paymentTxId) => {
+                  if (paymentTxId) {
+                    setTxId(paymentTxId);
+                    createVisitorAfterPayment();
+                  }
+                }}
+                onTxIdChange={(val) => setTxId(val)}
+                txId={txId}
+                proofFile={proofFile}
+                setProofFile={setProofFile}
+                apiBase={apiBase}
+              />
+              
+              {/* ✅ Skip Payment Button */}
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <p className="text-sm text-gray-600 mb-3">Don't want to process payment?</p>
+                <button
+                  onClick={handleSkipPayment}
+                  className="w-full px-4 py-3 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                  </svg>
+                  Skip Payment & Issue Ticket
+                </button>
+                <p className="text-xs text-gray-400 mt-2">
+                  This will issue a DELEGATE ticket without payment confirmation.
+                </p>
+              </div>
+            </div>
           )}
 
           {step === "form" && (
