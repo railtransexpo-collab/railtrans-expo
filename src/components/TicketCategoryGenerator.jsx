@@ -65,7 +65,7 @@ function normalizeCategoriesArray(arr, fallback = []) {
     button: (c && c.button) ? String(c.button) : "Select",
     originalPrice: safeNumber(c && c.originalPrice ? c.originalPrice : 0),
     discount: safeNumber(c && c.discount ? c.discount : 0),
-    finalPrice: safeNumber(c && c.finalPrice ? c.finalPrice : 0),
+    finalPrice: safeNumber(c && c.finalPrice ? c.finalPrice : 0), // ✅ Ensure this is read
   }));
 }
 

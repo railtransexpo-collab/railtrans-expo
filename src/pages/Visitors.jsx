@@ -464,15 +464,17 @@ export default function Visitors() {
             />
           )}
 
-          {/* Step 3: Payment (if paid ticket) */}
           {step === 3 &&
             !/free|general|0/i.test(String(ticketCategory || "")) &&
             !processing && (
               <ManualPaymentStep
                 ticketType={ticketCategory}
                 ticketPrice={ticketMeta.total || 0}
-                onProofUpload={(paymentTxId) => {
+                onProofUpload={(paymentTxId, isFreeCoupon) => {
                   if (paymentTxId) setTxId(paymentTxId);
+                  if (isFreeCoupon) {
+                    setTicketMeta((prev) => ({ ...prev, total: 0 }));
+                  }
                   completeRegistrationAndEmail();
                 }}
                 onTxIdChange={(val) => setTxId(val)}
@@ -619,7 +621,6 @@ export default function Visitors() {
               </div>
             </div>
           </div>
-
           <div className="w-full flex items-center justify-center my-6 sm:my-8">
             <div className="flex-grow border-t border-[#21809b]" />
             <span className="mx-3 sm:mx-5 px-4 sm:px-8 py-2 sm:py-3 text-lg sm:text-2xl font-extrabold text-[#21809b] bg-white shadow rounded-2xl">
@@ -627,7 +628,6 @@ export default function Visitors() {
             </span>
             <div className="flex-grow border-t border-[#21809b]" />
           </div>
-
           {!loading && step === 1 && Array.isArray(config?.fields) && (
             <div className="mx-auto w-full max-w-2xl">
               <DynamicRegistrationForm
@@ -646,7 +646,6 @@ export default function Visitors() {
               />
             </div>
           )}
-
           {!loading && step === 2 && (
             <TicketCategorySelector
               role="visitors"
@@ -654,24 +653,30 @@ export default function Visitors() {
               onChange={handleTicketSelect}
             />
           )}
-
+    
           {step === 3 &&
             !/free|general|0/i.test(String(ticketCategory || "")) &&
             !processing && (
               <ManualPaymentStep
                 ticketType={ticketCategory}
                 ticketPrice={ticketMeta.total || 0}
-                onProofUpload={(paymentTxId) => {
-                  if (paymentTxId) setTxId(paymentTxId);
+                onProofUpload={(paymentTxId, isFreeCoupon) => {
+                  if (paymentTxId) {
+                    setTxId(paymentTxId);
+                  }
+                  // ✅ If free coupon, set ticket_total to 0
+                  if (isFreeCoupon) {
+                    setTicketMeta((prev) => ({ ...prev, total: 0 }));
+                  }
                   completeRegistrationAndEmail();
                 }}
                 onTxIdChange={(val) => setTxId(val)}
                 txId={txId}
                 proofFile={proofFile}
                 setProofFile={setProofFile}
+                apiBase={API_BASE}
               />
             )}
-
           {step === 3 && processing && (
             <ProcessingCard
               title="Finalizing your registration…"
@@ -679,7 +684,6 @@ export default function Visitors() {
               note="If you paid in another tab, we will detect and continue automatically."
             />
           )}
-
           {step === 4 && (
             <>
               <ThankYouMessage
@@ -700,14 +704,12 @@ export default function Visitors() {
               </div>
             </>
           )}
-
           {!isMobile && bgVideoErrorMsg && (
             <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 rounded text-sm max-w-3xl mx-auto">
               Background video not playing: {String(bgVideoErrorMsg)}. Check
               console for details.
             </div>
           )}
-
           {error && (
             <div className="text-red-400 text-center mt-4">{error}</div>
           )}

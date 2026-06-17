@@ -202,14 +202,14 @@ export default function ManualPaymentStep({
           onTxIdChange && onTxIdChange(`free-${Date.now()}`);
         } catch (_) {}
 
+        // ✅ Pass a flag that this is a free coupon
         try {
-          onProofUpload && onProofUpload();
+          onProofUpload && onProofUpload(`free-${Date.now()}`, true); // ← true = isFreeCoupon
         } catch (_) {}
 
         setPayLoading(false);
         return;
       }
-
       const verifiedEmail =
         (typeof window !== "undefined" &&
           (localStorage.getItem("verifiedEmail") ||
