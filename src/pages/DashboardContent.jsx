@@ -61,8 +61,23 @@ function sanitizeRow(row) {
     out.id = String(row.id);
   }
 
+  // ✅ First, flatten the "data" field (contains all form fields)
+  if (row.data && typeof row.data === "object") {
+    for (const [dataKey, dataValue] of Object.entries(row.data)) {
+      if (dataValue !== undefined && dataValue !== null && dataValue !== "") {
+        // Skip if the key already exists in out
+        if (!(dataKey in out) || out[dataKey] === undefined || out[dataKey] === null) {
+          out[dataKey] = typeof dataValue === "object" 
+            ? JSON.stringify(dataValue) 
+            : String(dataValue);
+        }
+      }
+    }
+  }
+
+  // ✅ Then, process all other fields
   for (const k of Object.keys(row)) {
-    if (k === "_id") continue;
+    if (k === "_id" || k === "data") continue;
     const v = row[k];
     if (v === null || typeof v === "undefined") {
       out[k] = "";
