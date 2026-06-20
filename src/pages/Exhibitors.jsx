@@ -707,30 +707,17 @@ export default function Exhibitors() {
       <div className="relative z-10">
         <Topbar />
         <div className="max-w-7xl mx-auto pt-8">
-          <div
-            className="flex flex-col sm:flex-row items-stretch mb-10"
-            style={{ minHeight: 370 }}
-          >
-            <div className="sm:w-[60%] w-full flex items-center justify-center">
-              {loading ? (
-                <div className="text-[#21809b] text-2xl font-bold">
-                  Loading...
-                </div>
-              ) : (
-                <ImageSlider images={config?.images || []} />
-              )}
-            </div>
-            <div className="sm:w-[40%] w-full flex items-center justify-center">
-              {loading ? (
-                <div className="text-[#21809b] text-xl font-semibold">
-                  Loading event details...
-                </div>
-              ) : (
-                <EventDetailsBlock
-                  event={canonicalEvent || config?.eventDetails || null}
-                />
-              )}
-            </div>
+          {/* Centered Event Details */}
+          <div className="flex justify-center items-center mb-8 py-4">
+            {loading ? (
+              <span className="text-[#21809b] text-xl font-semibold">
+                Loading event details...
+              </span>
+            ) : (
+              <EventDetailsBlock
+                event={canonicalEvent || config?.eventDetails || null}
+              />
+            )}
           </div>
 
           <SectionTitle />

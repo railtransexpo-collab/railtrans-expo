@@ -248,8 +248,6 @@ export default function Visitors() {
             "Content-Type": "application/json",
             "ngrok-skip-browser-warning": "69420",
           },
-          // Some backends expect the OTP verification token at the top-level
-          // while others look for it inside `form`. Send both for compatibility.
           body: JSON.stringify({
             form: payload,
             ...(verificationToken ? { verificationToken } : {}),
@@ -259,8 +257,6 @@ export default function Visitors() {
         const json = await res.json().catch(() => null);
 
         if (res.ok || (json && json.success)) {
-          // Backend should return { success: true, id: insertedId }
-          // Prioritize json.id, fallback to legacy fields for compatibility
           const id =
             (json && json.id) ||
             (json && json.insertedId) ||
@@ -340,7 +336,6 @@ export default function Visitors() {
         return;
       }
 
-      // Basic email format validation
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(finalEmail)) {
         setError("Please enter a valid email address");
@@ -364,12 +359,11 @@ export default function Visitors() {
         ticket_total: ticketMeta.total,
       });
 
-      // ✅ Backend handles reminders automatically via scheduleDynamicReminder()
       if (saveResult.id) {
         console.log(
           "[Visitors] Registration successful, reminder scheduled by backend",
         );
-        setReminderScheduled(true); // Show success message
+        setReminderScheduled(true);
         setReminderError("");
       }
 
@@ -563,64 +557,48 @@ export default function Visitors() {
       <div className="relative z-10">
         <Topbar />
         <div className="max-w-7xl mx-auto pt-8">
-          <div
-            className="flex flex-col sm:flex-row items-stretch mb-10"
-            style={{ minHeight: 370 }}
-          >
-            <div className="sm:w-[60%] w-full flex items-center justify-center">
-              {loading ? (
-                <div className="text-[#21809b] text-2xl font-bold">
-                  Loading...
+          {/* ✅ Centered Event Data - No Banner/Image */}
+          <div className="flex justify-center items-center mb-8 py-4">
+            <div className="text-center">
+              <div
+                className="font-extrabold text-4xl sm:text-6xl mb-4 text-center"
+                style={{
+                  background:
+                    "linear-gradient(90deg,#ffba08 0%,#19a6e7 60%,#21809b 100%)",
+                  WebkitBackgroundClip: "text",
+                  WebkitTextFillColor: "transparent",
+                }}
+              >
+                {(canonicalEvent && canonicalEvent.name) ||
+                  config?.title ||
+                  "Welcome"}
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold mb-2 text-center text-[#21809b]">
+                {(canonicalEvent &&
+                  (canonicalEvent.date || canonicalEvent.dates)) ||
+                  config?.eventDetails?.date ||
+                  "Event Date"}
+              </div>
+              <div className="text-xl sm:text-2xl font-semibold text-center text-[#196e87]">
+                {(canonicalEvent && canonicalEvent.venue) ||
+                  config?.eventDetails?.venue ||
+                  "Event Venue"}
+              </div>
+              {(canonicalEvent && canonicalEvent.time) ||
+              (config?.eventDetails && config.eventDetails.time) ? (
+                <div className="text-base mt-3 text-center text-gray-700">
+                  {(canonicalEvent && canonicalEvent.time) ||
+                    (config?.eventDetails && config.eventDetails.time)}
                 </div>
-              ) : (
-                <div className="rounded-3xl overflow-hidden shadow-2xl h-[220px] sm:h-[320px] w-[340px] sm:w-[500px] bg-white/75 flex items-center justify-center">
-                  {config?.images?.length ? (
-                    <img
-                      src={normalizeAdminUrl(config.images[0])}
-                      alt="banner"
-                      className="object-cover w-full h-full"
-                    />
-                  ) : null}
+              ) : null}
+              {canonicalEvent?.tagline && (
+                <div className="text-base text-center text-gray-600 mt-2">
+                  {canonicalEvent.tagline}
                 </div>
               )}
             </div>
-            <div className="sm:w-[40%] w-full flex items-center justify-center">
-              <div className="flex flex-col items-center justify-center h-full w-full mt-6">
-                <div
-                  className="font-extrabold text-3xl sm:text-5xl mb-3 text-center"
-                  style={{
-                    background:
-                      "linear-gradient(90deg,#ffba08 0%,#19a6e7 60%,#21809b 100%)",
-                    WebkitBackgroundClip: "text",
-                    WebkitTextFillColor: "transparent",
-                  }}
-                >
-                  {(canonicalEvent && canonicalEvent.name) ||
-                    config?.title ||
-                    "Welcome"}
-                </div>
-
-                <div className="text-xl sm:text-2xl font-bold mb-1 text-center text-[#21809b]">
-                  {(canonicalEvent &&
-                    (canonicalEvent.date || canonicalEvent.dates)) ||
-                    config?.eventDetails?.date ||
-                    "Event Date"}
-                </div>
-                <div className="text-base sm:text-xl font-semibold text-center text-[#196e87]">
-                  {(canonicalEvent && canonicalEvent.venue) ||
-                    config?.eventDetails?.venue ||
-                    "Event Venue"}
-                </div>
-                {(canonicalEvent && canonicalEvent.time) ||
-                (config?.eventDetails && config.eventDetails.time) ? (
-                  <div className="text-sm mt-2 text-center text-gray-700">
-                    {(canonicalEvent && canonicalEvent.time) ||
-                      (config?.eventDetails && config.eventDetails.time)}
-                  </div>
-                ) : null}
-              </div>
-            </div>
           </div>
+
           <div className="w-full flex items-center justify-center my-6 sm:my-8">
             <div className="flex-grow border-t border-[#21809b]" />
             <span className="mx-3 sm:mx-5 px-4 sm:px-8 py-2 sm:py-3 text-lg sm:text-2xl font-extrabold text-[#21809b] bg-white shadow rounded-2xl">
@@ -628,6 +606,7 @@ export default function Visitors() {
             </span>
             <div className="flex-grow border-t border-[#21809b]" />
           </div>
+
           {!loading && step === 1 && Array.isArray(config?.fields) && (
             <div className="mx-auto w-full max-w-2xl">
               <DynamicRegistrationForm
@@ -646,6 +625,7 @@ export default function Visitors() {
               />
             </div>
           )}
+
           {!loading && step === 2 && (
             <TicketCategorySelector
               role="visitors"
@@ -653,7 +633,7 @@ export default function Visitors() {
               onChange={handleTicketSelect}
             />
           )}
-    
+
           {step === 3 &&
             !/free|general|0/i.test(String(ticketCategory || "")) &&
             !processing && (
@@ -664,7 +644,6 @@ export default function Visitors() {
                   if (paymentTxId) {
                     setTxId(paymentTxId);
                   }
-                  // ✅ If free coupon, set ticket_total to 0
                   if (isFreeCoupon) {
                     setTicketMeta((prev) => ({ ...prev, total: 0 }));
                   }
@@ -677,6 +656,7 @@ export default function Visitors() {
                 apiBase={API_BASE}
               />
             )}
+
           {step === 3 && processing && (
             <ProcessingCard
               title="Finalizing your registration…"
@@ -684,6 +664,7 @@ export default function Visitors() {
               note="If you paid in another tab, we will detect and continue automatically."
             />
           )}
+
           {step === 4 && (
             <>
               <ThankYouMessage
@@ -704,12 +685,14 @@ export default function Visitors() {
               </div>
             </>
           )}
+
           {!isMobile && bgVideoErrorMsg && (
             <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 rounded text-sm max-w-3xl mx-auto">
               Background video not playing: {String(bgVideoErrorMsg)}. Check
               console for details.
             </div>
           )}
+
           {error && (
             <div className="text-red-400 text-center mt-4">{error}</div>
           )}

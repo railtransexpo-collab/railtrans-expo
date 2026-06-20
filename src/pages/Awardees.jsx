@@ -653,45 +653,18 @@ export default function Awardees() {
       <div className="relative z-10">
         <Topbar />
         <div className="max-w-7xl mx-auto pt-8">
-          <div
-            className="flex flex-col sm:flex-row items-stretch mb-10"
-            style={{ minHeight: 370 }}
-          >
-            <div className="sm:w-[60%] w-full flex items-center justify-center">
-              {loading ? (
-                <span className="text-[#21809b] text-2xl font-bold">
-                  Loading images...
-                </span>
-              ) : (
-                <div className="rounded-3xl overflow-hidden shadow-2xl border-4 border-[#19a6e7] h-[220px] sm:h-[320px] w-[340px] sm:w-[500px] max-w-full bg-white/75 flex items-center justify-center p-4">
-                  <img
-                    src={
-                      (config?.images && config.images[0]) ||
-                      "/images/speaker_placeholder.jpg"
-                    }
-                    alt="hero"
-                    className="object-cover w-full h-full"
-                    style={{ maxHeight: 220 }}
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="sm:w-[40%] w-full flex items-center justify-center">
-              {loading ? (
-                <span className="text-[#21809b] text-xl font-semibold">
-                  Loading event details...
-                </span>
-              ) : (
-                <div className="w-full px-4">
-                  <EventDetailsBlock
-                    event={canonicalEvent || config?.eventDetails || null}
-                  />
-                </div>
-              )}
-            </div>
+          {/* Centered Event Details */}
+          <div className="flex justify-center items-center mb-8 py-4">
+            {loading ? (
+              <span className="text-[#21809b] text-xl font-semibold">
+                Loading event details...
+              </span>
+            ) : (
+              <EventDetailsBlock
+                event={canonicalEvent || config?.eventDetails || null}
+              />
+            )}
           </div>
-
           <div className="mb-6">
             <div className="flex items-center">
               <div className="flex-grow border-t border-[#21809b]" />

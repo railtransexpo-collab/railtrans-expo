@@ -164,9 +164,9 @@ export default function Partners() {
   const isMobile = useIsMobile(1024);
   const videoRef = useRef(null);
   const videoUrl =
-  config?.backgroundMedia?.type === "video"
-    ? config.backgroundMedia.url
-    : null;
+    config?.backgroundMedia?.type === "video"
+      ? config.backgroundMedia.url
+      : null;
   const [primaryColor, setPrimaryColor] = useState("#196e87");
 
   useEffect(() => {
@@ -484,68 +484,48 @@ export default function Partners() {
       <div className="relative z-10">
         <Topbar />
         <div className="max-w-7xl mx-auto pt-8">
-          <div
-            className="flex flex-col sm:flex-row items-stretch mb-10"
-            style={{ minHeight: 370 }}
-          >
-            <div className="sm:w-[60%] w-full flex items-center justify-center">
-              {loading ? (
-                <span className="text-[#21809b] text-2xl font-bold">
-                  Loading images...
-                </span>
-              ) : config?.images && config.images.length ? (
-                <ImageSlider images={config.images} />
-              ) : (
-                <div className="text-[#21809b]"> </div>
-              )}
-            </div>
-
-            <div className="sm:w-[40%] w-full flex items-center justify-center">
-              {loading ? (
-                <span className="text-[#21809b] text-xl font-semibold">
-                  Loading event details...
-                </span>
-              ) : (
-                <div className="w-full px-4">
-                  <div
-                    className="font-extrabold text-3xl sm:text-5xl mb-3 text-center"
-                    style={{
-                      background:
-                        "linear-gradient(90deg,#ffba08 0%,#19a6e7 60%,#21809b 100%)",
-                      WebkitBackgroundClip: "text",
-                      WebkitTextFillColor: "transparent",
-                    }}
-                  >
-                    {(canonicalEvent && canonicalEvent.name) ||
-                      config?.eventDetails?.name ||
-                      "Event Name"}
-                  </div>
-
-                  <div className="text-xl sm:text-2xl font-bold mb-1 text-center text-[#21809b]">
-                    {(canonicalEvent &&
-                      (canonicalEvent.date || canonicalEvent.dates)) ||
-                      config?.eventDetails?.date ||
-                      "Event Date"}
-                  </div>
-
-                  <div className="text-base sm:text-xl font-semibold text-center text-[#196e87]">
-                    {(canonicalEvent && canonicalEvent.venue) ||
-                      config?.eventDetails?.venue ||
-                      "Event Venue"}
-                  </div>
-
-                  {(canonicalEvent && canonicalEvent.tagline) ||
-                  config?.eventDetails?.tagline ? (
-                    <div className="text-sm mt-2 text-center text-gray-700">
-                      {(canonicalEvent && canonicalEvent.tagline) ||
-                        config?.eventDetails?.tagline}
-                    </div>
-                  ) : null}
+          {/* Centered Event Details */}
+          <div className="flex justify-center items-center mb-8 py-4">
+            {loading ? (
+              <span className="text-[#21809b] text-xl font-semibold">
+                Loading event details...
+              </span>
+            ) : (
+              <div className="text-center">
+                <div
+                  className="font-extrabold text-4xl sm:text-6xl mb-3"
+                  style={{
+                    background:
+                      "linear-gradient(90deg,#ffba08 0%,#19a6e7 60%,#21809b 100%)",
+                    WebkitBackgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                  }}
+                >
+                  {(canonicalEvent && canonicalEvent.name) ||
+                    config?.eventDetails?.name ||
+                    "Event Name"}
                 </div>
-              )}
-            </div>
+                <div className="text-xl sm:text-2xl font-bold mb-1 text-[#21809b]">
+                  {(canonicalEvent &&
+                    (canonicalEvent.date || canonicalEvent.dates)) ||
+                    config?.eventDetails?.date ||
+                    "Event Date"}
+                </div>
+                <div className="text-base sm:text-xl font-semibold text-[#196e87]">
+                  {(canonicalEvent && canonicalEvent.venue) ||
+                    config?.eventDetails?.venue ||
+                    "Event Venue"}
+                </div>
+                {(canonicalEvent && canonicalEvent.tagline) ||
+                config?.eventDetails?.tagline ? (
+                  <div className="text-sm mt-2 text-gray-700">
+                    {(canonicalEvent && canonicalEvent.tagline) ||
+                      config?.eventDetails?.tagline}
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
-
           <div className="w-full flex items-center justify-center my-8">
             <div className="flex-grow border-t border-[#21809b]" />
             <span className="mx-5 px-8 py-3 text-2xl font-extrabold text-[#21809b] bg-white shadow rounded-2xl">
