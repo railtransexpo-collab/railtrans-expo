@@ -699,47 +699,7 @@ export default function DashboardContent() {
       setDeleteOpen(false);
     }
   }
-  // ✅ New: Refresh only a single row without resetting pagination
-  async function refreshSingleRow(table, idVal) {
-    try {
-      const res = await fetch(
-        buildApiUrl(
-          `${apiMap.current[table]}/${encodeURIComponent(String(idVal))}`,
-        ),
-        {
-          headers: {
-            "ngrok-skip-browser-warning": "69420",
-          },
-        },
-      );
-      if (res.ok) {
-        const fresh = await res.json().catch(() => null);
-        if (!fresh) return;
 
-        const freshData = fresh.data || fresh;
-
-        // Update rawReport
-        setRawReport((prev) => ({
-          ...prev,
-          [table]: (prev[table] || []).map((r) =>
-            String(r.id || r._id || "") === String(idVal) ? freshData : r,
-          ),
-        }));
-
-        // Update report (sanitized)
-        setReport((prev) => ({
-          ...prev,
-          [table]: (prev[table] || []).map((r) =>
-            String(r.id || r._id || "") === String(idVal)
-              ? sanitizeRow(freshData || {})
-              : r,
-          ),
-        }));
-      }
-    } catch (e) {
-      console.warn("refreshSingleRow error:", e);
-    }
-  }
 
   async function handleEditSave(updatedRowRaw) {
     if (!editTable) return null;
@@ -772,6 +732,57 @@ export default function DashboardContent() {
     } catch (e) {
       setActionMsg(`Error: ${e.message}`);
       return null;
+    }
+  }
+
+
+  // ✅ New: Refresh only a single row without resetting pagination
+  async function refreshSingleRow(table, idVal) {
+    try {
+      const res = await fetch(
+        buildApiUrl(
+          `${apiMap.current[table]}/${encodeURIComponent(String(idVal))}`,
+        ),
+        {
+          headers: {
+            "ngrok-skip-browser-warning": "69420",
+          },
+        },
+      );
+      if (res.ok) {
+        const fresh = await res.json().catch(() => null);
+        if (!fresh) return;
+
+        const freshData = fresh.data || fresh;
+
+        // ✅ Update rawReport - preserve array reference for unchanged items
+        setRawReport((prev) => {
+          const oldArr = prev[table] || [];
+          const idx = oldArr.findIndex(
+            (r) => String(r.id || r._id || "") === String(idVal),
+          );
+          if (idx === -1) return prev;
+
+          const newArr = [...oldArr];
+          newArr[idx] = freshData;
+          return { ...prev, [table]: newArr };
+        });
+
+        // ✅ Update report (sanitized) - preserve array reference for unchanged items
+        setReport((prev) => {
+          const oldArr = prev[table] || [];
+          const idx = oldArr.findIndex(
+            (r) => String(r.id || r._id || "") === String(idVal),
+          );
+          if (idx === -1) return prev;
+
+          const newArr = [...oldArr];
+          newArr[idx] = sanitizeRow(freshData || {});
+          return { ...prev, [table]: newArr };
+        });
+      }
+    } catch (e) {
+      console.warn("refreshSingleRow error:", e);
     }
   }
 

@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback } from "react";
+import React, { useMemo, useCallback, useRef } from "react";
 import DataTable from "./DataTable";
 
 /**
@@ -26,9 +26,35 @@ export default function DashboardSection({
   prettifyKey = (k) => String(k || "").replace(/[_-]/g, " ").replace(/\b\w/g, (s) => s.toUpperCase()),
   showSendTicket = true,
 }) {
+  // ✅ Stable data reference to prevent unnecessary re-renders that reset pagination
+  const prevDataRef = useRef(data);
+  const prevDataIdsRef = useRef("");
+  
+  const stableData = useMemo(() => {
+    const currentIds = data.map(r => r.id || r._id || "").join(",");
+    const currentLength = data.length;
+    const prevLength = prevDataRef.current.length;
+    const prevIds = prevDataIdsRef.current;
+    
+    // If same length and same IDs (row order unchanged), use previous reference
+    if (currentLength === prevLength && currentIds === prevIds) {
+      // Update the previous ref's data in place (rows might have updated values)
+      // But keep the same array reference
+      for (let i = 0; i < data.length; i++) {
+        Object.assign(prevDataRef.current[i], data[i]);
+      }
+      return prevDataRef.current;
+    }
+    
+    // New data - update refs
+    prevDataRef.current = [...data];
+    prevDataIdsRef.current = currentIds;
+    return data;
+  }, [data]);
+
   const columns = useMemo(() => {
     const keysSet = new Set();
-    (data || []).forEach((row) => {
+    (stableData || []).forEach((row) => {
       Object.keys(row || {}).forEach((k) => {
         if (!HIDDEN_FIELDS.has(k)) keysSet.add(k);
       });
@@ -138,7 +164,7 @@ export default function DashboardSection({
       
       return { key: k, label: prettifyKey(k) };
     });
-  }, [data, configs, tableKey, HIDDEN_FIELDS, prettifyKey]);
+  }, [stableData, configs, tableKey, HIDDEN_FIELDS, prettifyKey]);
 
   const handleRowAction = useCallback(
     (action, row) => {
@@ -167,7 +193,7 @@ export default function DashboardSection({
       <header className="flex items-center justify-between mb-3">
         <div>
           <h2 className="text-lg font-semibold">{label}</h2>
-          <div className="text-xs text-gray-500">{(data || []).length} total</div>
+          <div className="text-xs text-gray-500">{(stableData || []).length} total</div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -185,7 +211,7 @@ export default function DashboardSection({
       <div>
         <DataTable
           columns={columns}
-          data={data}
+          data={stableData}
           defaultPageSize={PAGE_SIZE}
           onEdit={(row) => handleRowAction("edit", row)}
           onDelete={(row) => handleRowAction("delete", row)}
