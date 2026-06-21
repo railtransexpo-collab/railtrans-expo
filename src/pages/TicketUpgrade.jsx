@@ -1,8 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import TicketCategorySelector from "../components/TicketCategoryGenerator";
 import VisitorTicket from "../components/VisitorTicket";
-import { readRegistrationCache, writeRegistrationCache } from "../utils/registrationCache";
+import {
+  readRegistrationCache,
+  writeRegistrationCache,
+} from "../utils/registrationCache";
 
 const LOCAL_PRICE_KEY = "ticket_categories_local_v1";
 const API_BASE = (
@@ -70,7 +79,9 @@ export default function TicketUpgrade() {
   const id = search.get("id") || "";
   const providedTicketCode = search.get("ticket_code") || "";
   const expectedEmailParam = search.get("email") || "";
-  const expectedEmail = expectedEmailParam ? normalizeEmail(expectedEmailParam) : null;
+  const expectedEmail = expectedEmailParam
+    ? normalizeEmail(expectedEmailParam)
+    : null;
 
   const [loading, setLoading] = useState(true);
   const [record, setRecord] = useState(null);
@@ -89,7 +100,7 @@ export default function TicketUpgrade() {
   const [processing, setProcessing] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentCheckoutUrl, setPaymentCheckoutUrl] = useState("");
-  
+
   // ✅ NEW: Coupon states
   const [couponCode, setCouponCode] = useState("");
   const [couponError, setCouponError] = useState("");
@@ -121,7 +132,10 @@ export default function TicketUpgrade() {
         try {
           // Check cache
           const cached = readRegistrationCache(entity, id);
-          if (cached && (!expectedEmail || normalizeEmail(cached.email) === expectedEmail)) {
+          if (
+            cached &&
+            (!expectedEmail || normalizeEmail(cached.email) === expectedEmail)
+          ) {
             if (!mounted) return;
             setRecord(cached);
             const cur = cached.ticket_category || "";
@@ -172,7 +186,9 @@ export default function TicketUpgrade() {
       // Try ticket code
       if (providedTicketCode) {
         try {
-          const url = buildApiUrl(`/api/visitors/by-ticket/${encodeURIComponent(providedTicketCode)}`);
+          const url = buildApiUrl(
+            `/api/visitors/by-ticket/${encodeURIComponent(providedTicketCode)}`,
+          );
           console.log("[TicketUpgrade] Fetching by ticket:", url);
 
           const js = await tryFetch(url, { credentials: "same-origin" });
@@ -186,7 +202,10 @@ export default function TicketUpgrade() {
 
           // Validate ticket
           const fetchedTicket = (data.ticket_code || "").toString().trim();
-          if (!fetchedTicket || fetchedTicket !== String(providedTicketCode).trim()) {
+          if (
+            !fetchedTicket ||
+            fetchedTicket !== String(providedTicketCode).trim()
+          ) {
             setError("Ticket code mismatch.");
             setLoading(false);
             return;
@@ -224,7 +243,7 @@ export default function TicketUpgrade() {
       if (!localPricing?.visitors) return;
 
       const found = localPricing.visitors.find(
-        (c) => String(c.value).toLowerCase() === String(cat).toLowerCase()
+        (c) => String(c.value).toLowerCase() === String(cat).toLowerCase(),
       );
 
       if (found) {
@@ -252,7 +271,9 @@ export default function TicketUpgrade() {
   const onCategoryChange = useCallback((val, meta) => {
     console.log("[TicketUpgrade] Category changed:", val, meta);
     setSelectedCategory(val);
-    setSelectedMeta(meta || { price: 0, gstRate: 0, gstAmount: 0, total: 0, label: val });
+    setSelectedMeta(
+      meta || { price: 0, gstRate: 0, gstAmount: 0, total: 0, label: val },
+    );
     setShowPayment(false);
     setPaymentCheckoutUrl("");
     // Reset coupon when category changes
@@ -266,10 +287,13 @@ export default function TicketUpgrade() {
     return !t || t === 0;
   }, [selectedMeta]);
 
-  const currentCategory = (record?.ticket_category || "");
+  const currentCategory = record?.ticket_category || "";
   const isSameCategory = useMemo(() => {
     if (!selectedCategory) return true;
-    return String(selectedCategory).toLowerCase() === String(currentCategory).toLowerCase();
+    return (
+      String(selectedCategory).toLowerCase() ===
+      String(currentCategory).toLowerCase()
+    );
   }, [selectedCategory, currentCategory]);
 
   const applyUpgrade = useCallback(async () => {
@@ -326,34 +350,118 @@ export default function TicketUpgrade() {
         return;
       }
 
-      // Check if payment required
-      if (js.payment_required && js.checkoutUrl) {
-        console.log("[TicketUpgrade] Payment required, checkout URL:", js.checkoutUrl);
-        
-        // ✅ BETTER: Try opening payment window with fallback
-        const paymentWindow = window.open(js.checkoutUrl, "_blank", "noopener,noreferrer");
-        
-        if (!paymentWindow) {
-          // Popup blocked - show the link directly
-          setShowPayment(true);
-          setPaymentCheckoutUrl(js.checkoutUrl);
-          setMessage("⚠️ Popup blocked! Click the link below to complete payment.");
+      // Check if payment required - use Razorpay SDK
+      if (js.payment_required && js.orderId) {
+        console.log("[TicketUpgrade] Opening Razorpay checkout...");
+
+        const options = {
+          key: js.key,
+          amount: js.amount,
+          currency: js.currency || "INR",
+          name: "RailTrans Expo",
+          description: `Ticket Upgrade - ${selectedMeta.label || selectedCategory}`,
+          order_id: js.orderId,
+          handler: async function (response) {
+            console.log("[TicketUpgrade] Payment successful:", response);
+            setProcessing(true);
+
+            try {
+              // Complete upgrade with payment ID
+              const completePayload = {
+                entity_type: "visitors",
+                entity_id: targetId,
+                new_category: selectedCategory,
+                amount: selectedMeta.total || 0,
+                email: record?.email || null,
+                txId: response.razorpay_payment_id,
+                method: "online",
+                couponCode: couponApplied ? couponCode : undefined,
+              };
+
+              const completeUrl = buildApiUrl("/api/tickets/upgrade");
+              const completeRes = await fetch(completeUrl, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "ngrok-skip-browser-warning": "69420",
+                },
+                body: JSON.stringify(completePayload),
+                credentials: "same-origin",
+              });
+
+              const completeJs = await completeRes.json().catch(() => ({}));
+
+              if (completeRes.ok && completeJs.success) {
+                setMessage(
+                  "✅ Upgrade successful! Check your email for confirmation.",
+                );
+                setCouponCode("");
+                setCouponApplied(false);
+
+                // Refetch updated record
+                const fetchUrl = buildApiUrl(
+                  `/api/visitors/${encodeURIComponent(targetId)}`,
+                );
+                const updatedData = await tryFetch(fetchUrl, {
+                  credentials: "same-origin",
+                });
+                const updated = updatedData?.data || updatedData || null;
+                if (updated) {
+                  setRecord(updated);
+                  writeRegistrationCache("visitors", targetId, updated);
+                }
+              } else {
+                setError(
+                  completeJs.error ||
+                    "Payment successful but upgrade failed. Contact support.",
+                );
+              }
+            } catch (e) {
+              console.error("[TicketUpgrade] Post-payment error:", e);
+              setError(
+                "Payment successful but upgrade failed. Contact support.",
+              );
+            } finally {
+              setProcessing(false);
+            }
+          },
+          prefill: {
+            name: record?.name || "",
+            email: record?.email || "",
+            contact: record?.mobile || "",
+          },
+          theme: {
+            color: "#196e87",
+          },
+          modal: {
+            ondismiss: function () {
+              console.log("[TicketUpgrade] Payment cancelled");
+              setProcessing(false);
+            },
+          },
+        };
+
+        // Check if Razorpay SDK is loaded
+        if (typeof window.Razorpay === "function") {
+          const rzp = new window.Razorpay(options);
+          rzp.open();
         } else {
-          setShowPayment(true);
-          setPaymentCheckoutUrl(js.checkoutUrl);
-          setMessage("Payment window opened. Complete payment to finish upgrade.");
+          setError("Payment system not loaded. Please refresh and try again.");
         }
-        
+
         setProcessing(false);
         return;
       }
-
       // Upgrade completed (free or coupon made it free)
       console.log("[TicketUpgrade] ✅ Upgrade completed");
 
       // Refetch record
-      const fetchUrl = buildApiUrl(`/api/visitors/${encodeURIComponent(targetId)}`);
-      const updatedData = await tryFetch(fetchUrl, { credentials: "same-origin" });
+      const fetchUrl = buildApiUrl(
+        `/api/visitors/${encodeURIComponent(targetId)}`,
+      );
+      const updatedData = await tryFetch(fetchUrl, {
+        credentials: "same-origin",
+      });
       const updated = updatedData?.data || updatedData || null;
 
       if (updated) {
@@ -396,7 +504,10 @@ export default function TicketUpgrade() {
               Choose a new ticket category and complete payment if required.
             </div>
           </div>
-          <button className="px-3 py-1 border rounded" onClick={() => navigate(-1)}>
+          <button
+            className="px-3 py-1 border rounded"
+            onClick={() => navigate(-1)}
+          >
             Back
           </button>
         </div>
@@ -404,15 +515,21 @@ export default function TicketUpgrade() {
         {loading ? (
           <div className="p-6 bg-white rounded shadow">Loading visitor…</div>
         ) : error ? (
-          <div className="p-6 bg-red-50 text-red-700 rounded shadow">{error}</div>
+          <div className="p-6 bg-red-50 text-red-700 rounded shadow">
+            {error}
+          </div>
         ) : !record ? (
-          <div className="p-6 bg-yellow-50 rounded shadow">Visitor not found.</div>
+          <div className="p-6 bg-yellow-50 rounded shadow">
+            Visitor not found.
+          </div>
         ) : (
           <div className="bg-white rounded shadow p-6">
             <div className="mb-4">
               <div className="text-sm text-gray-500">Visitor</div>
               <div className="text-xl font-semibold">
-                {record.name || record.company || `#${id || providedTicketCode}`}
+                {record.name ||
+                  record.company ||
+                  `#${id || providedTicketCode}`}
               </div>
               <div className="text-sm text-gray-600">
                 {record.email || ""} • {record.mobile || ""}
@@ -423,7 +540,9 @@ export default function TicketUpgrade() {
             </div>
 
             <div className="mb-6">
-              <div className="text-lg font-semibold mb-3">Choose a new ticket category</div>
+              <div className="text-lg font-semibold mb-3">
+                Choose a new ticket category
+              </div>
               <TicketCategorySelector
                 role="visitors"
                 value={selectedCategory}
@@ -435,7 +554,8 @@ export default function TicketUpgrade() {
 
             <div className="mb-4">
               <div className="text-sm text-gray-600">
-                Selected: <strong>{selectedMeta.label || selectedCategory || "—"}</strong>
+                Selected:{" "}
+                <strong>{selectedMeta.label || selectedCategory || "—"}</strong>
               </div>
               <div className="text-2xl font-extrabold">
                 {selectedMeta.total
@@ -444,7 +564,8 @@ export default function TicketUpgrade() {
               </div>
               {selectedMeta.gstAmount ? (
                 <div className="text-sm text-gray-500">
-                  Includes GST: ₹{Number(selectedMeta.gstAmount).toLocaleString("en-IN")}
+                  Includes GST: ₹
+                  {Number(selectedMeta.gstAmount).toLocaleString("en-IN")}
                 </div>
               ) : null}
             </div>
@@ -452,7 +573,9 @@ export default function TicketUpgrade() {
             {/* ✅ NEW: Coupon Code Section */}
             {!isSelectedFree && selectedCategory && !isSameCategory && (
               <div className="mb-4 p-4 bg-gray-50 rounded border">
-                <div className="text-sm font-semibold mb-2">Have a coupon code?</div>
+                <div className="text-sm font-semibold mb-2">
+                  Have a coupon code?
+                </div>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -516,14 +639,16 @@ export default function TicketUpgrade() {
                 {processing
                   ? "Processing..."
                   : isSelectedFree
-                  ? "Apply Upgrade (Free)"
-                  : couponApplied
-                  ? "Apply Upgrade (with Coupon)"
-                  : "Proceed to Payment"}
+                    ? "Apply Upgrade (Free)"
+                    : couponApplied
+                      ? "Apply Upgrade (with Coupon)"
+                      : "Proceed to Payment"}
               </button>
 
               {!selectedCategory && (
-                <div className="mt-2 text-sm text-gray-500">Select a category to continue.</div>
+                <div className="mt-2 text-sm text-gray-500">
+                  Select a category to continue.
+                </div>
               )}
               {selectedCategory && isSameCategory && (
                 <div className="mt-2 text-sm text-gray-500">
@@ -565,11 +690,15 @@ export default function TicketUpgrade() {
             </div>
 
             {message && (
-              <div className={`mt-4 p-3 rounded ${
-                message.includes("✅") ? "bg-green-50 text-green-700" : 
-                message.includes("⚠️") ? "bg-yellow-50 text-yellow-700" : 
-                "bg-blue-50 text-blue-700"
-              }`}>
+              <div
+                className={`mt-4 p-3 rounded ${
+                  message.includes("✅")
+                    ? "bg-green-50 text-green-700"
+                    : message.includes("⚠️")
+                      ? "bg-yellow-50 text-yellow-700"
+                      : "bg-blue-50 text-blue-700"
+                }`}
+              >
                 {message}
               </div>
             )}

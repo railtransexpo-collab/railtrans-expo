@@ -699,6 +699,47 @@ export default function DashboardContent() {
       setDeleteOpen(false);
     }
   }
+  // ✅ New: Refresh only a single row without resetting pagination
+  async function refreshSingleRow(table, idVal) {
+    try {
+      const res = await fetch(
+        buildApiUrl(
+          `${apiMap.current[table]}/${encodeURIComponent(String(idVal))}`,
+        ),
+        {
+          headers: {
+            "ngrok-skip-browser-warning": "69420",
+          },
+        },
+      );
+      if (res.ok) {
+        const fresh = await res.json().catch(() => null);
+        if (!fresh) return;
+
+        const freshData = fresh.data || fresh;
+
+        // Update rawReport
+        setRawReport((prev) => ({
+          ...prev,
+          [table]: (prev[table] || []).map((r) =>
+            String(r.id || r._id || "") === String(idVal) ? freshData : r,
+          ),
+        }));
+
+        // Update report (sanitized)
+        setReport((prev) => ({
+          ...prev,
+          [table]: (prev[table] || []).map((r) =>
+            String(r.id || r._id || "") === String(idVal)
+              ? sanitizeRow(freshData || {})
+              : r,
+          ),
+        }));
+      }
+    } catch (e) {
+      console.warn("refreshSingleRow error:", e);
+    }
+  }
 
   async function handleEditSave(updatedRowRaw) {
     if (!editTable) return null;
@@ -736,33 +777,8 @@ export default function DashboardContent() {
 
   async function handleRefreshRow(table, displayRow) {
     const idVal = displayRow.id || displayRow._id || "";
-    try {
-      const res = await fetch(
-        buildApiUrl(
-          `${apiMap.current[table]}/${encodeURIComponent(String(idVal))}`,
-        ),
-      );
-      if (res.ok) {
-        const fresh = await res.json();
-        setRawReport((p) => ({
-          ...p,
-          [table]: (p[table] || []).map((r) =>
-            String(r.id || r._id || "") === String(idVal) ? fresh : r,
-          ),
-        }));
-        setReport((p) => ({
-          ...p,
-          [table]: (p[table] || []).map((r) =>
-            String(r.id || r._id || "") === String(idVal)
-              ? sanitizeRow(fresh || {})
-              : r,
-          ),
-        }));
-        setActionMsg("Refreshed");
-      }
-    } catch (e) {
-      setActionMsg(`Refresh error: ${e.message}`);
-    }
+    await refreshSingleRow(table, idVal);
+    setActionMsg("Refreshed");
   }
 
   async function handleResend(table, row) {
@@ -798,7 +814,8 @@ export default function DashboardContent() {
       const js = await res.json().catch(() => null);
       if (res.ok) {
         setActionMsg(`Email sent to ${row.email || "recipient"}`);
-        handleRefreshRow(table, row);
+        // ✅ ONLY refresh the single row, don't re-fetch everything
+        await refreshSingleRow(table, idVal);
       } else setActionMsg(`Resend failed: ${js?.error || res.status}`);
     } catch (e) {
       setActionMsg(`Resend error: ${e.message}`);
@@ -806,7 +823,6 @@ export default function DashboardContent() {
       setResendLoadingId(null);
     }
   }
-
   // ✅ DEFINE stats HERE
   const stats = useMemo(
     () => ({
