@@ -14,7 +14,7 @@ const API_BASE = (
 const FRONTEND_BASE = (
   (typeof window !== "undefined" && window.__FRONTEND_BASE__) ||
   process.env.REACT_APP_FRONTEND_BASE ||
-  window.location?. origin ||
+  window.location?.origin ||
   ""
 ).replace(/\/$/, "");
 
@@ -38,7 +38,7 @@ function normalizeEmail(e) {
 }
 
 function buildApiUrl(path) {
-  if (! API_BASE) return path;
+  if (!API_BASE) return path;
   if (/^https?:\/\//i.test(path)) return path;
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
   return `${API_BASE}${cleanPath}`;
@@ -55,7 +55,7 @@ async function tryFetch(url, opts = {}) {
     });
     if (!r.ok) return null;
     const ct = r.headers.get("content-type") || "";
-    if (! ct.toLowerCase().includes("application/json")) return null;
+    if (!ct.toLowerCase().includes("application/json")) return null;
     return await r.json().catch(() => null);
   } catch {
     return null;
@@ -89,6 +89,11 @@ export default function TicketUpgrade() {
   const [processing, setProcessing] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentCheckoutUrl, setPaymentCheckoutUrl] = useState("");
+  
+  // ✅ NEW: Coupon states
+  const [couponCode, setCouponCode] = useState("");
+  const [couponError, setCouponError] = useState("");
+  const [couponApplied, setCouponApplied] = useState(false);
 
   console.log("[TicketUpgrade] Init:", { entity, id, expectedEmail });
 
@@ -105,7 +110,7 @@ export default function TicketUpgrade() {
         return;
       }
 
-      if (! id && !providedTicketCode) {
+      if (!id && !providedTicketCode) {
         setError("Missing visitor id or ticket_code.");
         setLoading(false);
         return;
@@ -116,10 +121,10 @@ export default function TicketUpgrade() {
         try {
           // Check cache
           const cached = readRegistrationCache(entity, id);
-          if (cached && (! expectedEmail || normalizeEmail(cached.email) === expectedEmail)) {
-            if (! mounted) return;
+          if (cached && (!expectedEmail || normalizeEmail(cached.email) === expectedEmail)) {
+            if (!mounted) return;
             setRecord(cached);
-            const cur = cached. ticket_category || "";
+            const cur = cached.ticket_category || "";
             setSelectedCategory(cur);
             updateMetaFromCategory(cur);
             setLoading(false);
@@ -149,7 +154,7 @@ export default function TicketUpgrade() {
             }
           }
 
-          if (! mounted) return;
+          if (!mounted) return;
           setRecord(data);
           const cur = data.ticket_category || "";
           setSelectedCategory(cur);
@@ -189,7 +194,7 @@ export default function TicketUpgrade() {
 
           // Validate email
           if (expectedEmail) {
-            const fetchedEmail = normalizeEmail(data. email || "");
+            const fetchedEmail = normalizeEmail(data.email || "");
             if (fetchedEmail !== expectedEmail) {
               setError("Email mismatch.");
               setLoading(false);
@@ -197,7 +202,7 @@ export default function TicketUpgrade() {
             }
           }
 
-          if (! mounted) return;
+          if (!mounted) return;
           setRecord(data);
           const cur = data.ticket_category || "";
           setSelectedCategory(cur);
@@ -216,7 +221,7 @@ export default function TicketUpgrade() {
     function updateMetaFromCategory(cat) {
       if (!cat) return;
       const localPricing = readLocalPricing();
-      if (!localPricing?. visitors) return;
+      if (!localPricing?.visitors) return;
 
       const found = localPricing.visitors.find(
         (c) => String(c.value).toLowerCase() === String(cat).toLowerCase()
@@ -233,7 +238,7 @@ export default function TicketUpgrade() {
           gstRate,
           gstAmount,
           total,
-          label: found. label || found.value,
+          label: found.label || found.value,
         });
       }
     }
@@ -247,14 +252,18 @@ export default function TicketUpgrade() {
   const onCategoryChange = useCallback((val, meta) => {
     console.log("[TicketUpgrade] Category changed:", val, meta);
     setSelectedCategory(val);
-    setSelectedMeta(meta || { price: 0, gstRate: 0, gstAmount:  0, total: 0, label: val });
+    setSelectedMeta(meta || { price: 0, gstRate: 0, gstAmount: 0, total: 0, label: val });
     setShowPayment(false);
     setPaymentCheckoutUrl("");
+    // Reset coupon when category changes
+    setCouponCode("");
+    setCouponApplied(false);
+    setCouponError("");
   }, []);
 
   const isSelectedFree = useMemo(() => {
     const t = Number(selectedMeta.total || selectedMeta.price || 0);
-    return ! t || t === 0;
+    return !t || t === 0;
   }, [selectedMeta]);
 
   const currentCategory = (record?.ticket_category || "");
@@ -278,12 +287,14 @@ export default function TicketUpgrade() {
         return;
       }
 
+      // ✅ UPDATED: Include coupon code in payload
       const payload = {
-        entity_type:  "visitors",
-        entity_id:  targetId,
+        entity_type: "visitors",
+        entity_id: targetId,
         new_category: selectedCategory,
         amount: selectedMeta.total || 0,
         email: record?.email || null,
+        couponCode: couponApplied ? couponCode : undefined,
       };
 
       console.log("[TicketUpgrade] Sending upgrade request:", payload);
@@ -304,37 +315,46 @@ export default function TicketUpgrade() {
       console.log("[TicketUpgrade] Response:", js);
 
       if (!res.ok) {
-        setError(js. error || `Upgrade failed (${res.status})`);
+        // Check if coupon error
+        if (js.error && js.error.toLowerCase().includes("coupon")) {
+          setCouponError(js.error);
+          setCouponApplied(false);
+          setCouponCode("");
+        }
+        setError(js.error || `Upgrade failed (${res.status})`);
         setProcessing(false);
         return;
       }
 
       // Check if payment required
       if (js.payment_required && js.checkoutUrl) {
-        console.log("[TicketUpgrade] Payment required, opening checkout:", js.checkoutUrl);
+        console.log("[TicketUpgrade] Payment required, checkout URL:", js.checkoutUrl);
         
-        // Open checkout in new window
-        const w = window.open(js.checkoutUrl, "_blank", "noopener,noreferrer");
-        if (!w) {
-          setError("Could not open payment window.  Please allow popups.");
-          setProcessing(false);
-          return;
+        // ✅ BETTER: Try opening payment window with fallback
+        const paymentWindow = window.open(js.checkoutUrl, "_blank", "noopener,noreferrer");
+        
+        if (!paymentWindow) {
+          // Popup blocked - show the link directly
+          setShowPayment(true);
+          setPaymentCheckoutUrl(js.checkoutUrl);
+          setMessage("⚠️ Popup blocked! Click the link below to complete payment.");
+        } else {
+          setShowPayment(true);
+          setPaymentCheckoutUrl(js.checkoutUrl);
+          setMessage("Payment window opened. Complete payment to finish upgrade.");
         }
-
-        setMessage("Payment window opened. Complete payment to finish upgrade.");
-        setShowPayment(true);
-        setPaymentCheckoutUrl(js.checkoutUrl);
+        
         setProcessing(false);
         return;
       }
 
-      // Upgrade completed
+      // Upgrade completed (free or coupon made it free)
       console.log("[TicketUpgrade] ✅ Upgrade completed");
 
       // Refetch record
       const fetchUrl = buildApiUrl(`/api/visitors/${encodeURIComponent(targetId)}`);
       const updatedData = await tryFetch(fetchUrl, { credentials: "same-origin" });
-      const updated = updatedData?. data || updatedData || null;
+      const updated = updatedData?.data || updatedData || null;
 
       if (updated) {
         setRecord(updated);
@@ -343,14 +363,16 @@ export default function TicketUpgrade() {
         } catch {}
       }
 
-      setMessage("✅ Upgrade successful!  Check your email for confirmation.");
+      setMessage("✅ Upgrade successful! Check your email for confirmation.");
+      setCouponCode("");
+      setCouponApplied(false);
       setProcessing(false);
     } catch (e) {
       console.error("[TicketUpgrade] Error:", e);
-      setError("Upgrade failed:  " + e.message);
+      setError("Upgrade failed: " + e.message);
       setProcessing(false);
     }
-  }, [selectedCategory, selectedMeta, id, record]);
+  }, [selectedCategory, selectedMeta, id, record, couponApplied, couponCode]);
 
   const availableCategories = useMemo(() => {
     const local = readLocalPricing();
@@ -371,7 +393,7 @@ export default function TicketUpgrade() {
           <div>
             <h1 className="text-2xl font-bold">Upgrade Your Visitor Ticket</h1>
             <div className="text-sm text-gray-600">
-              Choose a new ticket category and complete payment if required. 
+              Choose a new ticket category and complete payment if required.
             </div>
           </div>
           <button className="px-3 py-1 border rounded" onClick={() => navigate(-1)}>
@@ -379,12 +401,12 @@ export default function TicketUpgrade() {
           </button>
         </div>
 
-        {loading ?  (
+        {loading ? (
           <div className="p-6 bg-white rounded shadow">Loading visitor…</div>
         ) : error ? (
           <div className="p-6 bg-red-50 text-red-700 rounded shadow">{error}</div>
-        ) : ! record ? (
-          <div className="p-6 bg-yellow-50 rounded shadow">Visitor not found. </div>
+        ) : !record ? (
+          <div className="p-6 bg-yellow-50 rounded shadow">Visitor not found.</div>
         ) : (
           <div className="bg-white rounded shadow p-6">
             <div className="mb-4">
@@ -413,26 +435,80 @@ export default function TicketUpgrade() {
 
             <div className="mb-4">
               <div className="text-sm text-gray-600">
-                Selected:  <strong>{selectedMeta.label || selectedCategory || "—"}</strong>
+                Selected: <strong>{selectedMeta.label || selectedCategory || "—"}</strong>
               </div>
               <div className="text-2xl font-extrabold">
                 {selectedMeta.total
                   ? `₹${Number(selectedMeta.total).toLocaleString("en-IN")}`
                   : "Free (no payment)"}
               </div>
-              {selectedMeta.gstAmount ?  (
+              {selectedMeta.gstAmount ? (
                 <div className="text-sm text-gray-500">
-                  Includes GST:  ₹{Number(selectedMeta.gstAmount).toLocaleString("en-IN")}
+                  Includes GST: ₹{Number(selectedMeta.gstAmount).toLocaleString("en-IN")}
                 </div>
               ) : null}
             </div>
+
+            {/* ✅ NEW: Coupon Code Section */}
+            {!isSelectedFree && selectedCategory && !isSameCategory && (
+              <div className="mb-4 p-4 bg-gray-50 rounded border">
+                <div className="text-sm font-semibold mb-2">Have a coupon code?</div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={couponCode}
+                    onChange={(e) => {
+                      setCouponCode(e.target.value.toUpperCase());
+                      setCouponApplied(false);
+                      setCouponError("");
+                    }}
+                    placeholder="Enter coupon code"
+                    className="border rounded px-3 py-2 text-sm flex-1 uppercase"
+                    disabled={couponApplied || processing}
+                  />
+                  <button
+                    onClick={() => {
+                      if (!couponCode.trim()) {
+                        setCouponError("Please enter a coupon code");
+                        return;
+                      }
+                      setCouponApplied(true);
+                      setCouponError("");
+                    }}
+                    disabled={couponApplied || processing || !couponCode.trim()}
+                    className={`px-4 py-2 rounded text-sm font-semibold ${
+                      couponApplied
+                        ? "bg-green-100 text-green-700 border border-green-300"
+                        : "bg-blue-600 text-white hover:bg-blue-700"
+                    }`}
+                  >
+                    {couponApplied ? "✓ Applied" : "Apply"}
+                  </button>
+                </div>
+                {couponApplied && (
+                  <button
+                    onClick={() => {
+                      setCouponCode("");
+                      setCouponApplied(false);
+                      setCouponError("");
+                    }}
+                    className="text-xs text-red-500 mt-1 hover:underline"
+                  >
+                    Remove coupon
+                  </button>
+                )}
+                {couponError && (
+                  <div className="text-red-500 text-xs mt-1">{couponError}</div>
+                )}
+              </div>
+            )}
 
             <div className="mb-6">
               <button
                 className={`px-6 py-3 rounded font-semibold ${
                   canApply
                     ? "bg-green-600 text-white hover:bg-green-700"
-                    :  "bg-gray-200 text-gray-500 cursor-not-allowed"
+                    : "bg-gray-200 text-gray-500 cursor-not-allowed"
                 }`}
                 onClick={applyUpgrade}
                 disabled={!canApply}
@@ -441,33 +517,39 @@ export default function TicketUpgrade() {
                   ? "Processing..."
                   : isSelectedFree
                   ? "Apply Upgrade (Free)"
+                  : couponApplied
+                  ? "Apply Upgrade (with Coupon)"
                   : "Proceed to Payment"}
               </button>
 
-              {! selectedCategory && (
-                <div className="mt-2 text-sm text-gray-500">Select a category to continue. </div>
+              {!selectedCategory && (
+                <div className="mt-2 text-sm text-gray-500">Select a category to continue.</div>
               )}
               {selectedCategory && isSameCategory && (
                 <div className="mt-2 text-sm text-gray-500">
-                  Selected category is same as current. 
+                  Selected category is same as current.
                 </div>
               )}
             </div>
 
+            {/* ✅ UPDATED: Payment section with better UX */}
             {showPayment && paymentCheckoutUrl && (
               <div className="mb-6 p-4 bg-blue-50 rounded border border-blue-200">
                 <div className="font-semibold mb-2">Payment Required</div>
                 <div className="text-sm text-gray-700 mb-3">
-                  A payment window has been opened. Complete the payment to finish your upgrade.
+                  Complete the payment to finish your upgrade.
                 </div>
                 <a
                   href={paymentCheckoutUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-600 underline text-sm"
+                  className="inline-block px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-semibold"
                 >
-                  Click here if payment window didn't open
+                  Open Payment Page
                 </a>
+                <div className="text-xs text-gray-500 mt-2">
+                  After payment, your ticket will be upgraded automatically.
+                </div>
               </div>
             )}
 
@@ -483,7 +565,13 @@ export default function TicketUpgrade() {
             </div>
 
             {message && (
-              <div className="mt-4 p-3 bg-green-50 text-green-700 rounded">{message}</div>
+              <div className={`mt-4 p-3 rounded ${
+                message.includes("✅") ? "bg-green-50 text-green-700" : 
+                message.includes("⚠️") ? "bg-yellow-50 text-yellow-700" : 
+                "bg-blue-50 text-blue-700"
+              }`}>
+                {message}
+              </div>
             )}
           </div>
         )}
