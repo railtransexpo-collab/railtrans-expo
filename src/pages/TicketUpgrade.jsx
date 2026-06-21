@@ -351,16 +351,17 @@ export default function TicketUpgrade() {
       }
 
       // Check if payment required - use Razorpay SDK
-      if (js.payment_required && js.orderId) {
+      if (js.payment_required && js.order) {
         console.log("[TicketUpgrade] Opening Razorpay checkout...");
 
+        const orderData = js.order;
         const options = {
-          key: js.key,
-          amount: js.amount,
-          currency: js.currency || "INR",
+          key: orderData.key || js.key,
+          amount: orderData.amount,
+          currency: orderData.currency || "INR",
           name: "RailTrans Expo",
           description: `Ticket Upgrade - ${selectedMeta.label || selectedCategory}`,
-          order_id: js.orderId,
+          order_id: orderData.orderId || orderData.id,
           handler: async function (response) {
             console.log("[TicketUpgrade] Payment successful:", response);
             setProcessing(true);
