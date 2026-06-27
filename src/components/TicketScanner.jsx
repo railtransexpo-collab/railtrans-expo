@@ -152,6 +152,107 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
     }
   };
 
+  // Simplified badge renderer - NO BLUE BORDER
+  const renderSimplifiedBadge = () => {
+    if (!validation?.ticket) return null;
+    
+    const { name = "Attendee", company = "Organization" } = validation.ticket;
+    
+    return (
+      <div style={{
+        width: "100%",
+        maxWidth: "380px",
+        aspectRatio: "1 / 1.4",
+        background: "white",
+        borderRadius: "12px",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
+        padding: "24px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: "12px",
+        // Removed border: "1px solid #e5e7eb"
+      }}>
+        {/* QR Code Placeholder - Horizontal line style */}
+        <div style={{
+          width: "120px",
+          height: "120px",
+          background: "#f3f4f6",
+          borderRadius: "8px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: "2px solid #d1d5db",
+          position: "relative"
+        }}>
+          {/* QR Code pattern simulation */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(7, 1fr)",
+            gap: "2px",
+            width: "80%",
+            height: "80%"
+          }}>
+            {Array.from({ length: 49 }).map((_, i) => {
+              const isBlack = Math.random() > 0.6;
+              return (
+                <div key={i} style={{
+                  background: isBlack ? "#1a1a1a" : "white",
+                  width: "100%",
+                  height: "100%",
+                  borderRadius: "1px"
+                }} />
+              );
+            })}
+          </div>
+          {/* QR Code label */}
+          <div style={{
+            position: "absolute",
+            bottom: "-20px",
+            fontSize: "10px",
+            color: "#6b7280",
+            textTransform: "uppercase",
+            letterSpacing: "1px"
+          }}>
+            SCAN ME
+          </div>
+        </div>
+
+        {/* Separator Line */}
+        <div style={{
+          width: "80%",
+          height: "1px",
+          background: "#e5e7eb",
+          margin: "8px 0"
+        }} />
+
+        {/* Name */}
+        <div style={{
+          fontSize: "22px",
+          fontWeight: "700",
+          color: "#1a1a1a",
+          textAlign: "center",
+          letterSpacing: "0.5px",
+          lineHeight: "1.2"
+        }}>
+          {name.toUpperCase()}
+        </div>
+
+        {/* Organization */}
+        <div style={{
+          fontSize: "14px",
+          fontWeight: "500",
+          color: "#6b7280",
+          textAlign: "center",
+          letterSpacing: "0.3px"
+        }}>
+          {company}
+        </div>
+      </div>
+    );
+  };
+
   return createPortal(
     <div style={{ 
       position: "fixed", 
@@ -167,7 +268,7 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
         background: "white", 
         borderRadius: "12px", 
         width: "100%", 
-        maxWidth: "650px", // Reduced from 850px
+        maxWidth: "600px", 
         maxHeight: "90vh",
         display: "flex", 
         flexDirection: "column",
@@ -205,13 +306,12 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          padding: "20px" // Added padding
+          padding: "30px 20px"
         }}>
           {loading && (
             <div style={{ textAlign: "center", color: "#6b7280", padding: "40px" }}>
               <div style={{ fontSize: "48px", marginBottom: "12px" }}>⏳</div>
-              <div style={{ fontSize: "16px", fontWeight: 500 }}>Loading badge preview...</div>
-              <div style={{ fontSize: "13px", marginTop: "6px", color: "#9ca3af" }}>Please wait</div>
+              <div style={{ fontSize: "16px", fontWeight: 500 }}>Generating badge...</div>
             </div>
           )}
           
@@ -261,32 +361,8 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
             </div>
           )}
           
-          {!loading && !error && pdfUrl && (
-            <div style={{
-              width: "100%",
-              maxWidth: "400px", // Fixed width for badge
-              aspectRatio: "1 / 1.4", // Standard badge ratio
-              background: "white",
-              borderRadius: "8px",
-              boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-              overflow: "hidden",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center"
-            }}>
-              <iframe 
-                src={pdfUrl} 
-                style={{ 
-                  width: "100%", 
-                  height: "100%", 
-                  border: "none",
-                  background: "white",
-                  transform: "scale(0.85)", // Scale down to fit nicely
-                  transformOrigin: "center"
-                }} 
-                title="Badge Preview"
-              />
-            </div>
+          {!loading && !error && validation?.ticket && (
+            renderSimplifiedBadge()
           )}
         </div>
 
@@ -340,19 +416,18 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
             
             <button 
               onClick={handlePrint} 
-              disabled={!pdfUrl} 
               style={{ 
                 padding: "10px 24px", 
-                background: pdfUrl ? "#196e87" : "#d1d5db", 
+                background: "#196e87", 
                 color: "white", 
                 border: "none", 
                 borderRadius: "6px", 
-                cursor: pdfUrl ? "pointer" : "not-allowed",
+                cursor: "pointer",
                 fontSize: "14px",
                 fontWeight: 600
               }}
             >
-               Print Badge
+              🖨️ Print Badge
             </button>
           </div>
         </div>
