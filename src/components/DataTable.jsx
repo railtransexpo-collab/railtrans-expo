@@ -31,7 +31,7 @@ export default function DataTable({
 
   const pageCount = Math.max(
     1,
-    Math.ceil((sortedData || []).length / defaultPageSize)
+    Math.ceil((sortedData || []).length / defaultPageSize),
   );
 
   const pagedData = useMemo(() => {
@@ -82,14 +82,20 @@ export default function DataTable({
                     {label || (prettifyKey ? prettifyKey(key) : key)}
                   </span>
                   {sortKey === key && (
-                    <span className="text-xs">{sortDir === "asc" ? "▲" : "▼"}</span>
+                    <span className="text-xs">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
                   )}
                 </div>
               </th>
             ))}
 
-            <th className="px-3 py-2 border-b border-gray-300 text-center w-24">Admin</th>
-            <th className="px-3 py-2 border-b border-gray-300 text-center w-36">Actions</th>
+            <th className="px-3 py-2 border-b border-gray-300 text-center w-24">
+              Admin
+            </th>
+            <th className="px-3 py-2 border-b border-gray-300 text-center w-36">
+              Actions
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -107,8 +113,11 @@ export default function DataTable({
             const keyId = row?.id ?? row?._id ?? row?.ID ?? i;
             const isResending = String(resendLoadingId || "") === String(keyId);
             return (
-              <tr key={String(keyId)} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                {columns.map(({ key }) => (
+              <tr
+                key={String(keyId)}
+                className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}
+              >
+                {columns.map(({ key, render }) => (
                   <td
                     key={key}
                     className="px-2 py-2 border-b border-gray-200 max-w-xs truncate"
@@ -121,7 +130,10 @@ export default function DataTable({
                     {(() => {
                       const value = row?.[key];
 
-                      // detect date-like fields by key name
+                      if (typeof render === "function") {
+                        return render(value, row);
+                      }
+
                       if (
                         key.toLowerCase().includes("date") ||
                         key.toLowerCase().includes("time") ||
@@ -149,7 +161,9 @@ export default function DataTable({
                       Admin
                     </span>
                   ) : (
-                    <span className="inline-block bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs">—</span>
+                    <span className="inline-block bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs">
+                      —
+                    </span>
                   )}
                 </td>
 
@@ -164,7 +178,9 @@ export default function DataTable({
 
                   <button
                     className="mr-2 text-red-600 hover:underline text-xs"
-                    onClick={() => typeof onDelete === "function" && onDelete(row)}
+                    onClick={() =>
+                      typeof onDelete === "function" && onDelete(row)
+                    }
                     title="Delete"
                   >
                     Delete
@@ -173,7 +189,9 @@ export default function DataTable({
                   {showSendTicket && typeof onResend === "function" ? (
                     <button
                       className={`mr-2 text-indigo-600 hover:underline text-xs ${isResending ? "opacity-60 cursor-not-allowed" : ""}`}
-                      onClick={() => { if (!isResending) onResend(row); }}
+                      onClick={() => {
+                        if (!isResending) onResend(row);
+                      }}
                       title="Send Ticket"
                       disabled={isResending}
                     >
@@ -183,7 +201,9 @@ export default function DataTable({
                     // No send-permission: show refresh action
                     <button
                       className="text-gray-600 hover:underline text-xs"
-                      onClick={() => typeof onRefreshRow === "function" && onRefreshRow(row)}
+                      onClick={() =>
+                        typeof onRefreshRow === "function" && onRefreshRow(row)
+                      }
                       title="Refresh this row"
                     >
                       ↻
@@ -206,7 +226,9 @@ export default function DataTable({
           >
             Prev
           </button>
-          <span className="text-sm">Page {Math.min(page + 1, pageCount)} of {pageCount}</span>
+          <span className="text-sm">
+            Page {Math.min(page + 1, pageCount)} of {pageCount}
+          </span>
           <button
             onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
             disabled={page === pageCount - 1}
