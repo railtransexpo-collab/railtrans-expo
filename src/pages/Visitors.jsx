@@ -367,6 +367,22 @@ export default function Visitors() {
         setReminderError("");
       }
 
+      // Reset registration state
+      setTicketCategory("");
+      setTicketMeta({
+        price: 0,
+        gstAmount: 0,
+        total: 0,
+        label: "",
+      });
+
+      setTxId("");
+      setProofFile(null);
+
+      try {
+        sessionStorage.removeItem("couponCode");
+        sessionStorage.removeItem("couponResult");
+      } catch {}
       setStep(4);
     } catch (err) {
       console.error("completeRegistrationAndEmail error:", err);

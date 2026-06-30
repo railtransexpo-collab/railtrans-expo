@@ -31,15 +31,17 @@ export default function ManualPaymentStep({
   const [couponBusy, setCouponBusy] = useState(false);
   const [couponError, setCouponError] = useState("");
 
-  // LOAD persisted coupon state (for UX refresh)
-  useEffect(() => {
-    try {
-      const sCode = sessionStorage.getItem("couponCode");
-      const sResult = sessionStorage.getItem("couponResult");
-      if (sCode) setCouponCode(sCode);
-      if (sResult) setCouponResult(JSON.parse(sResult));
-    } catch {}
-  }, []);
+useEffect(() => {
+  if (paymentCompletedRef.current) return;
+
+  try {
+    const sCode = sessionStorage.getItem("couponCode");
+    const sResult = sessionStorage.getItem("couponResult");
+
+    if (sCode) setCouponCode(sCode);
+    if (sResult) setCouponResult(JSON.parse(sResult));
+  } catch {}
+}, []);
 
   // PERSIST coupon state after result
   useEffect(() => {

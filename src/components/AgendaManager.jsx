@@ -10,7 +10,7 @@ export default function AgendaManager() {
   const [message, setMessage] = useState(null);
   const [messageType, setMessageType] = useState("success");
 
-  const API_BASE = process.env.REACT_APP_API_BASE || "";
+  const API_BASE = process.env.REACT_APP_API_BASE_URL || "";
 
   useEffect(() => {
     fetchAgenda();
