@@ -24,6 +24,7 @@ import TicketDownload from "./TicketDownload";
 import TicketUpgrade from "./TicketUpgrade";
 import EventDetailsAdmin from "./EventDetailsAdmin";
 import CouponsAdmin from "./CouponsAdmin";
+import PublicAgenda from "../components/PublicAgenda";
 
 // Simple placeholders (if you need them)
 function Registrations() {
@@ -50,8 +51,7 @@ export default function AppRoutes() {
         <Route path="/admin-login" element={<AdminLogin open={true} />} />
         <Route path="/ticket-download" element={<TicketDownload />} />
         <Route path="/ticket-upgrade" element={<TicketUpgrade />} />
-        {/* AdminPortal route */}
-        {/* Option A — Unprotected: anyone can open /admin-portal (page provides login UI) */}
+        <Route path="/agenda" element={<PublicAgenda />} />
         <Route path="/admin-portal" element={<AdminPortal />} />
         <Route
           path="/admin"
@@ -129,7 +129,7 @@ export default function AppRoutes() {
             </AdminRoute>
           }
         />
-       
+
 
         {/* Data admin pages */}
         <Route

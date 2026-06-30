@@ -8,6 +8,7 @@ import SpeakersAdmin from "./SpeakersAdmin";
 import AwardeesAdmin from "./AwardeesAdmin";
 import DashboardContent from "./DashboardContent";
 import Footer from "../components/Footer";
+import AgendaManager from "../components/AgendaManager"; // ✅ Add this import
 
 const TOPBAR_HEIGHT = 64;
 
@@ -47,6 +48,7 @@ export default function AdminPanel() {
       case "Partners": return <PartnersAdmin />;
       case "Speakers": return <SpeakersAdmin />;
       case "Awardees": return <AwardeesAdmin />;
+      case "Agenda": return <AgendaManager />; // ✅ Add this case
       default:
         return (
           <div className="p-8">
@@ -61,20 +63,17 @@ export default function AdminPanel() {
 
   return (
     <div className="bg-gray-50 min-h-screen w-full flex">
-      {/* Sidebar - desktop fixed, mobile overlay */}
       <Sidebar 
         open={sidebarOpen} 
         onClose={() => setSidebarOpen(false)} 
         selected={selected} 
         onSelect={(page) => {
           setSelected(page);
-          setSidebarOpen(false); // Close on mobile after selecting
+          setSidebarOpen(false);
         }} 
       />
 
-      {/* Main area */}
       <div className="flex-1 flex flex-col md:ml-64 min-h-screen">
-        {/* Fixed Topbar */}
         <div className="fixed top-0 right-0 left-0 md:left-64 z-40" style={{ height: TOPBAR_HEIGHT }}>
           <Topbar 
             showHamburger={true} 
@@ -82,12 +81,10 @@ export default function AdminPanel() {
           />
         </div>
 
-        {/* Content with padding for fixed topbar */}
         <main className="flex-1 pt-16 px-4 md:px-6">
           {renderPage()}
         </main>
 
-        {/* Footer at bottom */}
         <Footer primaryColor="#196e87" />
       </div>
     </div>
