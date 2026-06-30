@@ -194,9 +194,7 @@ export default function ManualPaymentStep({
       // FREE ticket flow (no payment needed)
       if (!amountToPay || amountToPay <= 0) {
         setPaymentStatus("paid");
-        if (couponResult && couponResult.coupon && couponResult.coupon.id) {
-          await markCouponAsUsed(couponResult.coupon.id);
-        }
+       
 
         const freeTxId = `free-${Date.now()}`;
         try {
@@ -247,6 +245,7 @@ export default function ManualPaymentStep({
               localStorage.getItem("visitorName")) ||
             "",
           email: verifiedEmail || "",
+
         },
       };
 
@@ -368,10 +367,7 @@ export default function ManualPaymentStep({
 
             setPaymentStatus("paid");
             
-            // Mark coupon as used if applicable
-            if (couponResult && couponResult.coupon && couponResult.coupon.id) {
-              await markCouponAsUsed(couponResult.coupon.id);
-            }
+         
             
             // Clear coupon from UI
             setCouponCode("");
