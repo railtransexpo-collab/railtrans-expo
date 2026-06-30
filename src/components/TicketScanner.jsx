@@ -152,14 +152,14 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
     }
   };
 
-  // Simplified badge renderer - NO BLUE BORDER
-  const renderSimplifiedBadge = () => {
-    if (!validation?.ticket) return null;
-    
-    const { name = "Attendee", company = "Organization" } = validation.ticket;
-    
-    return (
-      <div style={{
+const renderSimplifiedBadge = () => {
+  if (!validation?.ticket) return null;
+
+  const { name = "Attendee", company = "Organization" } = validation.ticket;
+
+  return (
+    <div
+      style={{
         width: "100%",
         maxWidth: "380px",
         aspectRatio: "1 / 1.4",
@@ -170,88 +170,52 @@ function BadgeModal({ ticketId, validation, printUrl, onClose, onScanAgain, stic
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "center",
-        gap: "12px",
-        // Removed border: "1px solid #e5e7eb"
-      }}>
-        {/* QR Code Placeholder - Horizontal line style */}
-        <div style={{
+      }}
+    >
+      {/* NAME */}
+      <div
+        style={{
+          fontSize: "18px",
+          fontWeight: "700",
+          color: "#111827",
+          textAlign: "center",
+          marginTop: "10px",
+        }}
+      >
+        {name.toUpperCase()}
+      </div>
+
+      {/* COMPANY */}
+      <div
+        style={{
+          fontSize: "14px",
+          color: "#6b7280",
+          textAlign: "center",
+          marginTop: "6px",
+          marginBottom: "20px",
+        }}
+      >
+        {company}
+      </div>
+
+      {/* QR */}
+      <div
+        style={{
           width: "120px",
           height: "120px",
           background: "#f3f4f6",
+          border: "2px solid #d1d5db",
           borderRadius: "8px",
           display: "flex",
-          alignItems: "center",
           justifyContent: "center",
-          border: "2px solid #d1d5db",
-          position: "relative"
-        }}>
-          {/* QR Code pattern simulation */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(7, 1fr)",
-            gap: "2px",
-            width: "80%",
-            height: "80%"
-          }}>
-            {Array.from({ length: 49 }).map((_, i) => {
-              const isBlack = Math.random() > 0.6;
-              return (
-                <div key={i} style={{
-                  background: isBlack ? "#1a1a1a" : "white",
-                  width: "100%",
-                  height: "100%",
-                  borderRadius: "1px"
-                }} />
-              );
-            })}
-          </div>
-          {/* QR Code label */}
-          <div style={{
-            position: "absolute",
-            bottom: "-20px",
-            fontSize: "10px",
-            color: "#6b7280",
-            textTransform: "uppercase",
-            letterSpacing: "1px"
-          }}>
-            SCAN ME
-          </div>
-        </div>
-
-        {/* Separator Line */}
-        <div style={{
-          width: "80%",
-          height: "1px",
-          background: "#e5e7eb",
-          margin: "8px 0"
-        }} />
-
-        {/* Name */}
-        <div style={{
-          fontSize: "22px",
-          fontWeight: "700",
-          color: "#1a1a1a",
-          textAlign: "center",
-          letterSpacing: "0.5px",
-          lineHeight: "1.2"
-        }}>
-          {name.toUpperCase()}
-        </div>
-
-        {/* Organization */}
-        <div style={{
-          fontSize: "14px",
-          fontWeight: "500",
-          color: "#6b7280",
-          textAlign: "center",
-          letterSpacing: "0.3px"
-        }}>
-          {company}
-        </div>
+          alignItems: "center",
+        }}
+      >
+        QR Preview
       </div>
-    );
-  };
+    </div>
+  );
+};
 
   return createPortal(
     <div style={{ 
